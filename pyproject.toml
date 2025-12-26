@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cross-sectional-xgboost"
+version = "0.1.0"
+description = "Cross-sectional factor mining with XGBoost regression"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.23",
+  "pandas>=2.0",
+  "pandas-ta>=0.3.14b0",
+  "pyarrow>=12.0",
+  "scikit-learn>=1.2",
+  "tushare>=1.2.89",
+  "xgboost>=1.7",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
