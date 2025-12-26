@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 
 import numpy as np
 # Workaround for pandas_ta NaN import issue
@@ -145,6 +146,9 @@ N_QUANTILES = int(eval_cfg.get("n_quantiles", 5))
 TOP_K = int(eval_cfg.get("top_k", 20))
 REBALANCE_FREQUENCY = eval_cfg.get("rebalance_frequency", "W")
 TRANSACTION_COST_BPS = float(eval_cfg.get("transaction_cost_bps", 10))
+SIGNAL_DIRECTION = float(eval_cfg.get("signal_direction", 1.0))
+if SIGNAL_DIRECTION == 0:
+    sys.exit("eval.signal_direction cannot be 0.")
 EMBARGO_DAYS = eval_cfg.get("embargo_days")
 if EMBARGO_DAYS is None:
     EMBARGO_DAYS = LABEL_HORIZON_DAYS + LABEL_SHIFT_DAYS
@@ -170,6 +174,15 @@ FEATURES = normalize_symbol_list(feature_list) if feature_list else [
     "vol",
 ]
 feature_params = features_cfg.get("params", {})
+cs_cfg = features_cfg.get("cross_sectional") or {}
+CS_METHOD = str(cs_cfg.get("method", "none")).strip().lower() if isinstance(cs_cfg, dict) else "none"
+CS_WINSORIZE_PCT = cs_cfg.get("winsorize_pct") if isinstance(cs_cfg, dict) else None
+if CS_WINSORIZE_PCT is not None:
+    CS_WINSORIZE_PCT = float(CS_WINSORIZE_PCT)
+    if not 0 < CS_WINSORIZE_PCT < 0.5:
+        sys.exit("features.cross_sectional.winsorize_pct must be between 0 and 0.5.")
+if CS_METHOD not in {"none", "zscore", "rank"}:
+    sys.exit("features.cross_sectional.method must be one of: none, zscore, rank.")
 
 XGB_PARAMS = model_cfg.get("params") or {}
 if not XGB_PARAMS:
@@ -192,6 +205,9 @@ BACKTEST_COST_BPS = float(backtest_cfg.get("transaction_cost_bps", TRANSACTION_C
 BACKTEST_TRADING_DAYS_PER_YEAR = int(backtest_cfg.get("trading_days_per_year", 252))
 BACKTEST_BENCHMARK = backtest_cfg.get("benchmark_symbol")
 BACKTEST_LONG_ONLY = bool(backtest_cfg.get("long_only", True))
+BACKTEST_SIGNAL_DIRECTION = float(backtest_cfg.get("signal_direction", SIGNAL_DIRECTION))
+if BACKTEST_SIGNAL_DIRECTION == 0:
+    sys.exit("backtest.signal_direction cannot be 0.")
 # -----------------------------------------------------------------------------
 # 2. Data download
 # -----------------------------------------------------------------------------
@@ -370,11 +386,42 @@ if WINSORIZE_PCT:
 
     df = df.groupby("trade_date", group_keys=False).apply(_winsorize)
 
+
+def apply_cross_sectional_transform(
+    data: pd.DataFrame,
+    features: list[str],
+    method: str,
+    winsorize_pct: Optional[float],
+) -> pd.DataFrame:
+    if method == "none":
+        return data
+
+    def _transform(group: pd.DataFrame) -> pd.DataFrame:
+        values = group[features].copy()
+        if winsorize_pct:
+            lower = values.quantile(winsorize_pct)
+            upper = values.quantile(1 - winsorize_pct)
+            values = values.clip(lower=lower, upper=upper, axis=1)
+        if method == "zscore":
+            mean = values.mean()
+            std = values.std(ddof=0).replace(0, np.nan)
+            values = (values - mean) / std
+            values = values.fillna(0.0)
+        elif method == "rank":
+            values = values.rank(method="average", pct=True) - 0.5
+        group[features] = values
+        return group
+
+    return data.groupby("trade_date", group_keys=False, sort=False).apply(_transform).reset_index(drop=True)
+
 # Drop dates with too few symbols for evaluation
 date_counts = df.groupby("trade_date")["ts_code"].nunique()
 valid_dates = date_counts[date_counts >= MIN_SYMBOLS_PER_DATE].index
 if len(valid_dates) != len(date_counts):
     df = df[df["trade_date"].isin(valid_dates)].copy()
+
+if CS_METHOD != "none":
+    df = apply_cross_sectional_transform(df, FEATURES, CS_METHOD, CS_WINSORIZE_PCT)
 
 # -----------------------------------------------------------------------------
 # 4. Train-test split (time-series by date)
@@ -425,7 +472,12 @@ def daily_ic_series(data: pd.DataFrame, target_col: str, pred_col: str) -> np.nd
     return np.array(daily)
 
 
-def time_series_cv_ic(data: pd.DataFrame, n_splits: int, embargo_days: int) -> list:
+def time_series_cv_ic(
+    data: pd.DataFrame,
+    n_splits: int,
+    embargo_days: int,
+    signal_direction: float,
+) -> list:
     dates = np.array(sorted(data["trade_date"].unique()))
     tscv = TimeSeriesSplit(n_splits=n_splits)
     scores = []
@@ -443,13 +495,15 @@ def time_series_cv_ic(data: pd.DataFrame, n_splits: int, embargo_days: int) -> l
         model = XGBRegressor(**XGB_PARAMS)
         model.fit(tr_df[FEATURES], tr_df[TARGET])
         va_df["pred"] = model.predict(va_df[FEATURES])
+        if signal_direction != 1.0:
+            va_df["pred"] = va_df["pred"] * signal_direction
 
         ic_values = daily_ic_series(va_df, TARGET, "pred")
         scores.append(np.nanmean(ic_values))
     return scores
 
 
-cv_scores = time_series_cv_ic(train_df, N_SPLITS, EMBARGO_DAYS)
+cv_scores = time_series_cv_ic(train_df, N_SPLITS, EMBARGO_DAYS, SIGNAL_DIRECTION)
 if cv_scores:
     print(f"CV IC: mean={np.nanmean(cv_scores):.4f}, std={np.nanstd(cv_scores):.4f}")
     print(f"CV fold ICs: {[f'{s:.4f}' for s in cv_scores]}")
@@ -469,9 +523,14 @@ model.fit(X_train, y_train)
 print("Evaluating on test set ...")
 
 test_df["pred"] = model.predict(test_df[FEATURES])
+signal_col = "pred"
+if SIGNAL_DIRECTION != 1.0:
+    test_df["signal"] = test_df["pred"] * SIGNAL_DIRECTION
+    signal_col = "signal"
+    print(f"Signal direction applied to ranking: {SIGNAL_DIRECTION}")
 
 # Daily IC
-ic_values = daily_ic_series(test_df, TARGET, "pred")
+ic_values = daily_ic_series(test_df, TARGET, signal_col)
 ic_mean = np.nanmean(ic_values)
 ic_std = np.nanstd(ic_values)
 ic_ir = ic_mean / ic_std if ic_std > 0 else np.nan
@@ -509,7 +568,7 @@ def quantile_returns(data: pd.DataFrame, pred_col: str, target_col: str, n_quant
 rebalance_dates = get_rebalance_dates(sorted(test_df["trade_date"].unique()), REBALANCE_FREQUENCY)
 eval_df = test_df[test_df["trade_date"].isin(rebalance_dates)].copy()
 
-quantile_mean = quantile_returns(eval_df, "pred", TARGET, N_QUANTILES)
+quantile_mean = quantile_returns(eval_df, signal_col, TARGET, N_QUANTILES)
 if not quantile_mean.empty:
     for q_idx, value in quantile_mean.items():
         print(f"Q{int(q_idx) + 1} mean return: {value:.4%}")
@@ -538,7 +597,7 @@ def estimate_turnover(data: pd.DataFrame, pred_col: str, k: int, freq: str):
 
 
 k = min(TOP_K, eval_df["ts_code"].nunique())
-turnover, n_turn = estimate_turnover(eval_df, "pred", k, REBALANCE_FREQUENCY)
+turnover, n_turn = estimate_turnover(eval_df, signal_col, k, REBALANCE_FREQUENCY)
 if not np.isnan(turnover):
     cost_drag = 2 * (TRANSACTION_COST_BPS / 10000.0) * turnover
     print(f"Top-{k} turnover per rebalance: {turnover:.2%} (n={n_turn})")
@@ -665,9 +724,13 @@ if BACKTEST_ENABLED:
         print("Backtest only supports long-only at the moment; set backtest.long_only: true.")
     else:
         bt_rebalance = get_rebalance_dates(sorted(test_df["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY)
+        bt_pred_col = signal_col
+        if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
+            test_df["signal_bt"] = test_df["pred"] * BACKTEST_SIGNAL_DIRECTION
+            bt_pred_col = "signal_bt"
         bt_result = backtest_topk(
             test_df,
-            pred_col="pred",
+            pred_col=bt_pred_col,
             price_col=PRICE_COL,
             rebalance_dates=bt_rebalance,
             top_k=BACKTEST_TOP_K,

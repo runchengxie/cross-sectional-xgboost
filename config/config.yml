@@ -25,7 +25,7 @@ universe:
 
 label:
   horizon_days: 5
-  shift_days: 0
+  shift_days: 1
   target_col: "future_return"
   winsorize_pct: null
 
@@ -44,6 +44,9 @@ features:
     rsi: 14
     macd: [12, 26, 9]
     volume_sma_windows: [5]
+  cross_sectional:
+    method: "zscore"
+    winsorize_pct: null
 
 model:
   type: xgb_regressor
@@ -63,13 +66,14 @@ eval:
   n_splits: 5
   n_quantiles: 5
   rebalance_frequency: "W"
-  top_k: 20
+  top_k: 5
+  signal_direction: -1
   transaction_cost_bps: 10
   embargo_days: null
 
 backtest:
   enabled: true
-  top_k: 20
+  top_k: 5
   rebalance_frequency: "W"
   transaction_cost_bps: 10
   trading_days_per_year: 252
