@@ -70,6 +70,11 @@ eval:
   signal_direction: -1
   transaction_cost_bps: 10
   embargo_days: null
+  report_train_ic: true
+  permutation_test:
+    enabled: false
+    n_runs: 3
+    seed: 42
 
 backtest:
   enabled: true

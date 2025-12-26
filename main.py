@@ -153,6 +153,20 @@ EMBARGO_DAYS = eval_cfg.get("embargo_days")
 if EMBARGO_DAYS is None:
     EMBARGO_DAYS = LABEL_HORIZON_DAYS + LABEL_SHIFT_DAYS
 EMBARGO_DAYS = int(EMBARGO_DAYS)
+REPORT_TRAIN_IC = bool(eval_cfg.get("report_train_ic", True))
+perm_cfg = eval_cfg.get("permutation_test") or {}
+if isinstance(perm_cfg, dict):
+    PERM_TEST_ENABLED = bool(perm_cfg.get("enabled", False))
+    PERM_TEST_RUNS = int(perm_cfg.get("n_runs", 1))
+    PERM_TEST_SEED = perm_cfg.get("seed")
+else:
+    PERM_TEST_ENABLED = bool(perm_cfg)
+    PERM_TEST_RUNS = 1
+    PERM_TEST_SEED = None
+if PERM_TEST_SEED is not None:
+    PERM_TEST_SEED = int(PERM_TEST_SEED)
+if PERM_TEST_RUNS < 1:
+    PERM_TEST_ENABLED = False
 
 MIN_SYMBOLS_PER_DATE = int(universe_cfg.get("min_symbols_per_date", N_QUANTILES))
 MIN_LISTED_DAYS = int(universe_cfg.get("min_listed_days", 0))
@@ -472,6 +486,53 @@ def daily_ic_series(data: pd.DataFrame, target_col: str, pred_col: str) -> np.nd
     return np.array(daily)
 
 
+def summarize_ic(data: pd.DataFrame, target_col: str, pred_col: str) -> tuple[np.ndarray, float, float, float]:
+    ic_values = daily_ic_series(data, target_col, pred_col)
+    ic_mean = np.nanmean(ic_values)
+    ic_std = np.nanstd(ic_values)
+    ic_ir = ic_mean / ic_std if ic_std > 0 else np.nan
+    return ic_values, ic_mean, ic_std, ic_ir
+
+
+def permute_target_within_date(
+    data: pd.DataFrame,
+    target_col: str,
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    def _permute(group: pd.DataFrame) -> pd.DataFrame:
+        group = group.copy()
+        group[target_col] = rng.permutation(group[target_col].values)
+        return group
+
+    return data.groupby("trade_date", group_keys=False, sort=False).apply(_permute)
+
+
+def permutation_test_ic(
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+    n_runs: int,
+    seed: Optional[int],
+    signal_direction: float,
+) -> list[float]:
+    scores = []
+    for idx in range(n_runs):
+        run_seed = None if seed is None else seed + idx
+        rng = np.random.default_rng(run_seed)
+        perm_train = permute_target_within_date(train_data, TARGET, rng)
+
+        perm_model = XGBRegressor(**XGB_PARAMS)
+        perm_model.fit(perm_train[FEATURES], perm_train[TARGET])
+
+        perm_test = test_data.copy()
+        perm_test["pred"] = perm_model.predict(perm_test[FEATURES])
+        if signal_direction != 1.0:
+            perm_test["pred"] = perm_test["pred"] * signal_direction
+
+        ic_values = daily_ic_series(perm_test, TARGET, "pred")
+        scores.append(np.nanmean(ic_values))
+    return scores
+
+
 def time_series_cv_ic(
     data: pd.DataFrame,
     n_splits: int,
@@ -520,7 +581,22 @@ model.fit(X_train, y_train)
 # -----------------------------------------------------------------------------
 # 7. Evaluation (cross-sectional factor style)
 # -----------------------------------------------------------------------------
-print("Evaluating on test set ...")
+print("Evaluating model on train/test sets ...")
+
+train_eval_df = train_df.copy()
+train_eval_df["pred"] = model.predict(train_eval_df[FEATURES])
+train_signal_col = "pred"
+if SIGNAL_DIRECTION != 1.0:
+    train_eval_df["signal"] = train_eval_df["pred"] * SIGNAL_DIRECTION
+    train_signal_col = "signal"
+if REPORT_TRAIN_IC:
+    train_ic_values, train_ic_mean, train_ic_std, train_ic_ir = summarize_ic(
+        train_eval_df, TARGET, train_signal_col
+    )
+    print(
+        f"Train Daily IC: mean={train_ic_mean:.4f}, std={train_ic_std:.4f}, "
+        f"IR={train_ic_ir:.2f} (n={len(train_ic_values)})"
+    )
 
 test_df["pred"] = model.predict(test_df[FEATURES])
 signal_col = "pred"
@@ -530,12 +606,23 @@ if SIGNAL_DIRECTION != 1.0:
     print(f"Signal direction applied to ranking: {SIGNAL_DIRECTION}")
 
 # Daily IC
-ic_values = daily_ic_series(test_df, TARGET, signal_col)
-ic_mean = np.nanmean(ic_values)
-ic_std = np.nanstd(ic_values)
-ic_ir = ic_mean / ic_std if ic_std > 0 else np.nan
-
+ic_values, ic_mean, ic_std, ic_ir = summarize_ic(test_df, TARGET, signal_col)
 print(f"Daily IC: mean={ic_mean:.4f}, std={ic_std:.4f}, IR={ic_ir:.2f} (n={len(ic_values)})")
+
+if PERM_TEST_ENABLED:
+    print("Permutation test (shuffle train labels within date) ...")
+    perm_scores = permutation_test_ic(
+        train_df,
+        test_df,
+        PERM_TEST_RUNS,
+        PERM_TEST_SEED,
+        SIGNAL_DIRECTION,
+    )
+    if perm_scores:
+        perm_mean = np.nanmean(perm_scores)
+        perm_std = np.nanstd(perm_scores)
+        print(f"Permutation IC: mean={perm_mean:.4f}, std={perm_std:.4f}, runs={len(perm_scores)}")
+        print(f"Permutation ICs: {[f'{s:.4f}' for s in perm_scores]}")
 
 # Quantile returns on rebalance dates
 

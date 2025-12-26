@@ -76,6 +76,7 @@ python main.py --config config/config.yml
 
 * `project_tools/verify_tushare_tokens.py`：验证 TuShare Token 是否可用
 * `project_tools/combine_code.py`：打包项目源码为单文件文本（用于归档/审查）
+* `project_tools/fetch_index_components.py`：拉取指数成分并导出为 `symbols_file` 列表
 
 ## 自定义参数
 
@@ -85,8 +86,17 @@ python main.py --config config/config.yml
 * `label`：预测窗口、shift、winsorize
 * `features`：特征清单与窗口
 * `model`：XGBoost 参数
-* `eval`：切分、分位数、换手成本与 embargo
+* `eval`：切分、分位数、换手成本、embargo，以及可选的 `report_train_ic` 与 `permutation_test`
 * `backtest`：再平衡频率、Top-K、成本与基准
+
+示例（生成指数成分列表）：
+
+```bash
+python project_tools/fetch_index_components.py \
+  --index-code 000300.SH \
+  --month 202501 \
+  --out hs300_symbols.txt
+```
 
 说明：
 
