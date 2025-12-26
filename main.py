@@ -1,6 +1,6 @@
 """main.py - Cross-sectional factor mining with XGBoost regression.
 Usage:
-    $ python main.py  # requires the TUSHARE_API_KEY env var
+    $ python main.py  # requires the TUSHARE_API_KEY (or TUSHARE_TOKEN) env var
 """
 import os
 import sys
@@ -26,9 +26,9 @@ warnings.filterwarnings("ignore")
 # 1. Config
 # -----------------------------------------------------------------------------
 load_dotenv()
-TOKEN = os.getenv("TUSHARE_API_KEY")
+TOKEN = os.getenv("TUSHARE_API_KEY") or os.getenv("TUSHARE_TOKEN")
 if not TOKEN:
-    sys.exit("Please set the TUSHARE_API_KEY environment variable first.")
+    sys.exit("Please set the TUSHARE_API_KEY or TUSHARE_TOKEN environment variable first.")
 
 SYMBOLS = [
     "AAPL",
