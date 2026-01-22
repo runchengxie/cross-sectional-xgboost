@@ -1,6 +1,6 @@
 # cross-sectional-xgboost
 
-使用 TuShare A股日线数据与 XGBoost 回归进行截面因子挖掘和评估。流程包含特征工程、时间序列切分、IC 评估、分位数组合收益、换手率估计与特征重要性输出。
+使用 TuShare 日线数据与 XGBoost 回归进行截面因子挖掘和评估（支持 A/HK/US 多市场配置切换）。流程包含特征工程、时间序列切分、IC 评估、分位数组合收益、换手率估计与特征重要性输出。
 
 项目是基于一个散户的视角，因此：
 
@@ -10,7 +10,7 @@
 
 ## 功能概览
 
-* 拉取 TuShare A股 `daily` 数据并缓存到 `cache/`（Parquet）
+* 拉取 TuShare 日线数据（按 `market` 选择 endpoint）并缓存到 `cache/`（Parquet）
 * 计算 SMA、RSI、MACD、成交量等技术指标
 * 训练 XGBoost 回归模型并评估截面 IC
 * 输出分位数组合收益、长短组合收益、换手率估计
@@ -62,6 +62,9 @@ direnv allow
 
 ```bash
 python main.py --config config/config.yml
+python main.py --config config/config.cn.yml
+python main.py --config config/config.hk.yml
+python main.py --config config/config.us.yml
 ```
 
 输出包含：
@@ -80,9 +83,11 @@ python main.py --config config/config.yml
 
 ## 自定义参数
 
-在 `config/config.yml` 中调整：
+在 `config/config.yml` 或各市场配置中调整：
 
 * `universe`：股票池、过滤条件、最小截面规模
+* `market`：`cn` / `hk` / `us`
+* `data`：`daily_endpoint` / `basic_endpoint` / `column_map`（字段映射为 `trade_date/ts_code/close/vol/amount`）
 * `label`：预测窗口、shift、winsorize
 * `features`：特征清单与窗口
 * `model`：XGBoost 参数
@@ -101,4 +106,5 @@ python project_tools/fetch_index_components.py \
 说明：
 
 * `drop_suspended` 通过成交量/成交额为 0 的数据近似过滤停牌。
-* `drop_st` 基于 `stock_basic` 的名称匹配，属于粗过滤。
+* `drop_st` 基于 `stock_basic` 的名称匹配，仅适用于 A 股，属于粗过滤。
+* 日线缓存文件名统一为 `{market}_daily_{symbol}_{START}_{END}.parquet`。

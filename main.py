@@ -1,4 +1,4 @@
-"""main.py - Cross-sectional factor mining with XGBoost regression (A-shares).
+"""main.py - Cross-sectional factor mining with XGBoost regression (multi-market).
 Usage:
     $ python main.py --config config/config.yml
     # requires the TUSHARE_API_KEY or TUSHARE_TOKEN env var
@@ -23,6 +23,8 @@ import yaml
 from xgboost import XGBRegressor
 from sklearn.model_selection import TimeSeriesSplit
 import warnings
+
+from data_providers import fetch_daily, load_basic, normalize_market
 
 warnings.filterwarnings("ignore")
 
@@ -81,6 +83,7 @@ args = parser.parse_args()
 config = load_config(Path(args.config))
 
 data_cfg = config.get("data", {})
+MARKET = normalize_market(config.get("market") or data_cfg.get("market"))
 universe_cfg = config.get("universe", {})
 label_cfg = config.get("label", {})
 features_cfg = config.get("features", {})
@@ -93,18 +96,36 @@ TOKEN = os.getenv("TUSHARE_API_KEY") or os.getenv("TUSHARE_TOKEN")
 if not TOKEN:
     sys.exit("Please set the TUSHARE_API_KEY or TUSHARE_TOKEN environment variable first.")
 
-DEFAULT_SYMBOLS = [
-    "600519.SH",
-    "601318.SH",
-    "600036.SH",
-    "000858.SZ",
-    "000333.SZ",
-    "600887.SH",
-    "600276.SH",
-    "601888.SH",
-    "000001.SZ",
-    "002415.SZ",
-]
+DEFAULT_SYMBOLS_BY_MARKET = {
+    "cn": [
+        "600519.SH",
+        "601318.SH",
+        "600036.SH",
+        "000858.SZ",
+        "000333.SZ",
+        "600887.SH",
+        "600276.SH",
+        "601888.SH",
+        "000001.SZ",
+        "002415.SZ",
+    ],
+    "hk": [
+        "00700.HK",
+        "00005.HK",
+        "00941.HK",
+        "00001.HK",
+        "00388.HK",
+    ],
+    "us": [
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "AMZN",
+        "GOOGL",
+    ],
+}
+
+DEFAULT_SYMBOLS = DEFAULT_SYMBOLS_BY_MARKET.get(MARKET, DEFAULT_SYMBOLS_BY_MARKET["cn"])
 
 symbols = normalize_symbol_list(universe_cfg.get("symbols", DEFAULT_SYMBOLS))
 symbols_file = universe_cfg.get("symbols_file")
@@ -232,31 +253,6 @@ ts.set_token(TOKEN)
 pro = ts.pro_api()
 
 
-def load_stock_basic(cache_dir: Path) -> pd.DataFrame:
-    cache_file = cache_dir / "stock_basic.parquet"
-    if cache_file.exists():
-        return pd.read_parquet(cache_file)
-    df_basic = pro.stock_basic(
-        list_status="L", fields="ts_code,name,list_date"
-    )
-    df_basic.to_parquet(cache_file)
-    return df_basic
-
-
-def load_symbol_data(symbol: str) -> pd.DataFrame:
-    cache_file = CACHE_DIR / f"cn_daily_{symbol}_{START_DATE}_{END_DATE}.parquet"
-    if cache_file.exists():
-        return pd.read_parquet(cache_file)
-    df_symbol = pro.daily(ts_code=symbol, start_date=START_DATE, end_date=END_DATE)
-    if df_symbol.empty:
-        print(f"No data for {symbol} - skipping.")
-        return df_symbol
-    if "ts_code" not in df_symbol.columns:
-        df_symbol["ts_code"] = symbol
-    df_symbol.to_parquet(cache_file)
-    return df_symbol
-
-
 benchmark_symbol = str(BACKTEST_BENCHMARK).strip() if BACKTEST_BENCHMARK else None
 symbols_for_data = symbols[:]
 if benchmark_symbol and benchmark_symbol not in symbols_for_data:
@@ -264,8 +260,20 @@ if benchmark_symbol and benchmark_symbol not in symbols_for_data:
 
 frames = []
 for symbol in symbols_for_data:
-    print(f"Fetching daily data for {symbol} ...")
-    data = load_symbol_data(symbol)
+    print(f"Fetching daily data for {symbol} ({MARKET}) ...")
+    try:
+        data = fetch_daily(
+            MARKET,
+            symbol,
+            START_DATE,
+            END_DATE,
+            CACHE_DIR,
+            pro,
+            data_cfg,
+        )
+    except Exception as exc:
+        print(f"Warning: daily data load failed for {symbol} ({exc}) - skipping.")
+        data = pd.DataFrame()
     if not data.empty:
         frames.append(data)
 
@@ -286,9 +294,11 @@ if benchmark_symbol:
 basic_df = None
 if DROP_ST or MIN_LISTED_DAYS > 0:
     try:
-        basic_df = load_stock_basic(CACHE_DIR)
+        if MARKET != "cn" and DROP_ST:
+            print(f"Note: drop_st is CN-specific; attempting basic data for market '{MARKET}'.")
+        basic_df = load_basic(MARKET, CACHE_DIR, pro, data_cfg)
     except Exception as exc:
-        print(f"Warning: stock_basic load failed ({exc}); skipping ST/listed filters.")
+        print(f"Warning: basic data load failed ({exc}); skipping ST/listed filters.")
         basic_df = None
 
 if DROP_ST and basic_df is not None and "name" in basic_df.columns:

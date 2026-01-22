@@ -1,23 +1,26 @@
-market: cn
+market: hk
 
 data:
   start_years: 5
   end_date: "today"
   cache_dir: "cache"
   price_col: "close"
+  daily_endpoint: "hk_daily"
+  basic_endpoint: "hk_basic"
+  column_map:
+    trade_date: trade_date
+    ts_code: ts_code
+    close: close
+    vol: vol
+    amount: amount
 
 universe:
   symbols:
-    - "600519.SH"
-    - "601318.SH"
-    - "600036.SH"
-    - "000858.SZ"
-    - "000333.SZ"
-    - "600887.SH"
-    - "600276.SH"
-    - "601888.SH"
-    - "000001.SZ"
-    - "002415.SZ"
+    - "00700.HK"
+    - "00005.HK"
+    - "00941.HK"
+    - "00001.HK"
+    - "00388.HK"
   symbols_file: null
   min_symbols_per_date: 5
   min_listed_days: 0
