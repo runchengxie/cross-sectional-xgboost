@@ -109,6 +109,13 @@ elif provider == "rqdata":
     init_kwargs = {}
     if isinstance(rq_cfg, dict) and isinstance(rq_cfg.get("init"), dict):
         init_kwargs.update(rq_cfg.get("init"))
+    # Allow .env / environment-based credentials as a fallback.
+    env_username = os.getenv("RQDATA_USERNAME") or os.getenv("RQDATA_USER")
+    env_password = os.getenv("RQDATA_PASSWORD")
+    if env_username and "username" not in init_kwargs:
+        init_kwargs["username"] = env_username
+    if env_password and "password" not in init_kwargs:
+        init_kwargs["password"] = env_password
     try:
         rqdatac.init(**init_kwargs)
     except Exception as exc:

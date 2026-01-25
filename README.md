@@ -17,7 +17,7 @@
 
 ## 环境与依赖
 
-* Python >= 3.9
+* Python >= 3.12
 * 依赖见 `pyproject.toml`
 * 可选：`uv` + `direnv`（仓库内已提供 `.envrc.example`）
 
@@ -40,7 +40,7 @@ pip install -e .
 
 ## 配置 TuShare Token（仅当 data.provider=tushare）
 
-主程序读取 `TUSHARE_API_KEY` 或 `TUSHARE_TOKEN`，工具脚本会读取 `TUSHARE_TOKEN` / `TUSHARE_TOKEN_2`。
+主程序读取 `TUSHARE_API_KEY` 或 `TUSHARE_TOKEN`，工具脚本主要读取 `TUSHARE_TOKEN` / `TUSHARE_TOKEN_2`（部分脚本也支持 `TUSHARE_API_KEY`）。
 如果你已从 `.env.example` 复制到 `.env`，请确保补充 `TUSHARE_API_KEY` 或 `TUSHARE_TOKEN`。
 
 示例 `.env`：
@@ -49,6 +49,8 @@ pip install -e .
 TUSHARE_API_KEY="replace-with-your-tushare-pro-token"
 TUSHARE_TOKEN="replace-with-your-tushare-pro-token"
 TUSHARE_TOKEN_2="replace-with-your-second-tushare-pro-token"
+RQDATA_USERNAME="your-user"
+RQDATA_PASSWORD="your-pass"
 ```
 
 若使用 `direnv`：
@@ -72,6 +74,8 @@ data:
       username: "your-user"
       password: "your-pass"
 ```
+
+也可使用环境变量 `RQDATA_USERNAME`（或 `RQDATA_USER`）/ `RQDATA_PASSWORD`（配置文件优先级更高）。
 
 ## 运行
 
