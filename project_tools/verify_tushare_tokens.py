@@ -8,6 +8,7 @@ import tushare as ts
 
 
 ENV_KEYS = ("TUSHARE_TOKEN", "TUSHARE_TOKEN_2")
+LEGACY_ENV_KEY = "TUSHARE_API_KEY"
 
 
 class TokenInfo(TypedDict):
@@ -63,6 +64,15 @@ def load_local_env() -> None:
         break
 
 
+def resolve_env_keys() -> list[str]:
+    """Return the env keys to verify, falling back to legacy API key if needed."""
+    keys = list(ENV_KEYS)
+    if not any(os.getenv(key) for key in keys):
+        if os.getenv(LEGACY_ENV_KEY):
+            return [LEGACY_ENV_KEY]
+    return keys
+
+
 def check_token(env_key: str) -> TokenCheckResult:
     """Return the outcome of verifying the TuShare token stored under ``env_key``."""
     token = os.getenv(env_key)
@@ -95,7 +105,8 @@ def check_token(env_key: str) -> TokenCheckResult:
 def main() -> None:
     load_local_env()
 
-    results = [check_token(env_key) for env_key in ENV_KEYS]
+    env_keys = resolve_env_keys()
+    results = [check_token(env_key) for env_key in env_keys]
     any_success = False
 
     for result in results:

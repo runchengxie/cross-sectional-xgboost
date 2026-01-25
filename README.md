@@ -40,15 +40,17 @@ pip install -e .
 
 ## 配置 TuShare Token（仅当 data.provider=tushare）
 
-主程序读取 `TUSHARE_API_KEY` 或 `TUSHARE_TOKEN`，工具脚本主要读取 `TUSHARE_TOKEN` / `TUSHARE_TOKEN_2`（部分脚本也支持 `TUSHARE_API_KEY`）。
-如果你已从 `.env.example` 复制到 `.env`，请确保补充 `TUSHARE_API_KEY` 或 `TUSHARE_TOKEN`。
+主程序与工具脚本优先读取 `TUSHARE_TOKEN`，其次 `TUSHARE_TOKEN_2`，仅在兼容旧配置时才读取 `TUSHARE_API_KEY`。
+如果你已从 `.env.example` 复制到 `.env`，请确保补充 `TUSHARE_TOKEN`（可选 `TUSHARE_TOKEN_2` 作为备用）。
+注意：当前实现不会自动轮换 Token，`TUSHARE_TOKEN_2` 仅作为备用读取。
 
 示例 `.env`：
 
 ```bash
-TUSHARE_API_KEY="replace-with-your-tushare-pro-token"
 TUSHARE_TOKEN="replace-with-your-tushare-pro-token"
 TUSHARE_TOKEN_2="replace-with-your-second-tushare-pro-token"
+# Legacy alias (avoid using unless required by old setups)
+# TUSHARE_API_KEY="replace-with-your-tushare-pro-token"
 RQDATA_USERNAME="your-user"
 RQDATA_PASSWORD="your-pass"
 ```

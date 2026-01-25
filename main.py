@@ -1,7 +1,7 @@
 """main.py - Cross-sectional factor mining with XGBoost regression (multi-market).
 Usage:
     $ python main.py --config config/config.yml
-    # provider-specific auth may be required (e.g. TUSHARE_API_KEY/TUSHARE_TOKEN)
+    # provider-specific auth may be required (e.g. TUSHARE_TOKEN/TUSHARE_TOKEN_2)
 """
 import argparse
 import os
@@ -95,9 +95,15 @@ load_dotenv()
 provider = resolve_provider(data_cfg)
 data_client = None
 if provider == "tushare":
-    TOKEN = os.getenv("TUSHARE_API_KEY") or os.getenv("TUSHARE_TOKEN")
+    TOKEN = (
+        os.getenv("TUSHARE_TOKEN")
+        or os.getenv("TUSHARE_TOKEN_2")
+        or os.getenv("TUSHARE_API_KEY")  # legacy alias
+    )
     if not TOKEN:
-        sys.exit("Please set the TUSHARE_API_KEY or TUSHARE_TOKEN environment variable first.")
+        sys.exit(
+            "Please set TUSHARE_TOKEN (or TUSHARE_TOKEN_2 / legacy TUSHARE_API_KEY) first."
+        )
     ts.set_token(TOKEN)
     data_client = ts.pro_api()
 elif provider == "rqdata":
