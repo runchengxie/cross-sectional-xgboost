@@ -7,7 +7,7 @@ name = "cross-sectional-xgboost"
 version = "0.1.0"
 description = "Cross-sectional factor mining with XGBoost regression"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.23",
   "pandas>=2.0",
