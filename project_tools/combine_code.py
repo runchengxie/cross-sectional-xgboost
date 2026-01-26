@@ -87,6 +87,7 @@ EXCLUDE_FILES: Set[str] = {
     "celerybeat-schedule",
     ".env",
     "uv.lock",
+    ".gitignore",
 }
 
 
