@@ -1,7 +1,7 @@
 market: hk
 
 data:
-  provider: "eodhd"
+  provider: "rqdata"
   start_years: 5
   end_date: "today"
   cache_dir: "cache"
