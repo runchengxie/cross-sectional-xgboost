@@ -525,6 +525,7 @@ def fetch_daily_with_retry(symbol: str) -> pd.DataFrame:
                 attempt,
                 MAX_ATTEMPTS,
                 exc,
+                exc_info=True,
             )
             if provider == "tushare" and ROTATE_TOKENS and len(tushare_tokens) > 1:
                 tushare_token_idx = (tushare_token_idx + 1) % len(tushare_tokens)

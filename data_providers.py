@@ -595,6 +595,8 @@ def fetch_daily(
         return df
 
     df = _standardize_daily_frame(df, market, data_cfg, symbol)
+    # Ensure buffers are writable before parquet serialization.
+    df = df.copy(deep=True)
     df.to_parquet(cache_file)
     return df
 
@@ -643,5 +645,7 @@ def load_basic(
     if symbols and "ts_code" in df_basic.columns:
         df_basic = df_basic[df_basic["ts_code"].isin(list(symbols))].copy()
 
+    # Ensure buffers are writable before parquet serialization.
+    df_basic = df_basic.copy(deep=True)
     df_basic.to_parquet(cache_file)
     return df_basic
