@@ -38,6 +38,87 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger("csxgb")
 
 # -----------------------------------------------------------------------------
+# rqdatac workaround
+# -----------------------------------------------------------------------------
+def _patch_rqdatac_adjust_price_readonly() -> None:
+    """Ensure rqdatac's in-place adjust doesn't choke on read-only arrays."""
+    try:
+        import rqdatac.services.detail.adjust_price as adjust_price
+    except Exception as exc:  # pragma: no cover - defensive import
+        logger.debug("rqdatac adjust_price import failed: %s", exc)
+        return
+    if getattr(adjust_price, "_csxgb_readonly_patch", False):
+        return
+
+    original = adjust_price.adjust_price_multi_df
+
+    def wrapped(df, order_book_ids, how, obid_slice_map, market):
+        r_map_fields = {
+            f: i
+            for i, f in enumerate(df.columns)
+            if f in adjust_price.FIELDS_NEED_TO_ADJUST
+        }
+        if not r_map_fields:
+            return
+        pre = how in ("pre", "pre_volume")
+        volume_adjust_by_ex_factor = how in ("pre_volume", "post_volume")
+        ex_factors = adjust_price.get_ex_factor_for(order_book_ids, market)
+        volume_adjust_factors = {}
+        if "volume" in r_map_fields:
+            if not volume_adjust_by_ex_factor:
+                volume_adjust_factors = adjust_price.get_split_factor_for(order_book_ids, market)
+            else:
+                volume_adjust_factors = ex_factors
+
+        data = df.to_numpy(copy=True)
+        try:
+            data.setflags(write=True)
+        except Exception:
+            pass
+        timestamps_level = df.index.get_level_values(1)
+        for order_book_id, slice_ in obid_slice_map.items():
+            if order_book_id not in order_book_ids:
+                continue
+            timestamps = timestamps_level[slice_]
+
+            def calculate_factor(factors_map, order_book_id):
+                factors = factors_map.get(order_book_id, None)
+                if factors is not None:
+                    factor = np.take(
+                        factors.values,
+                        factors.index.searchsorted(timestamps, side="right") - 1,
+                    )
+                    if pre:
+                        factor /= factors.iloc[-1]
+                    return factor
+
+            factor = calculate_factor(ex_factors, order_book_id)
+            if factor is None:
+                continue
+
+            if not volume_adjust_by_ex_factor:
+                factor_volume = calculate_factor(volume_adjust_factors, order_book_id)
+            else:
+                factor_volume = factor
+
+            for f, j in r_map_fields.items():
+                if f in adjust_price.PRICE_FIELDS:
+                    data[slice_, j] *= factor
+                elif factor_volume is not None:
+                    data[slice_, j] *= 1 / factor_volume
+
+        df.iloc[:, :] = data
+
+    wrapped.__name__ = original.__name__
+    wrapped.__doc__ = original.__doc__
+    adjust_price._csxgb_original_adjust_price_multi_df = original
+    adjust_price.adjust_price_multi_df = wrapped
+    adjust_price._csxgb_readonly_patch = True
+    logger.warning(
+        "Applied rqdatac read-only adjust_price patch (DataFrame copy on demand)."
+    )
+
+# -----------------------------------------------------------------------------
 # 1. Config
 # -----------------------------------------------------------------------------
 def load_config(path: Path) -> dict:
@@ -277,6 +358,7 @@ elif provider == "rqdata":
         rqdatac.init(**init_kwargs)
     except Exception as exc:
         sys.exit(f"rqdatac.init failed: {exc}")
+    _patch_rqdatac_adjust_price_readonly()
     data_client = rqdatac
 elif provider == "eodhd":
     eod_cfg = data_cfg.get("eodhd") or {}
