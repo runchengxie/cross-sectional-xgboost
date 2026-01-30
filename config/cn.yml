@@ -77,6 +77,7 @@ eval:
   rebalance_frequency: "M"
   top_k: 5
   signal_direction: -1
+  signal_direction_mode: "fixed"
   transaction_cost_bps: 10
   embargo_days: null
   purge_days: null
@@ -88,6 +89,17 @@ eval:
     enabled: false
     n_runs: 3
     seed: 42
+  walk_forward:
+    enabled: false
+    n_windows: 3
+    test_size: null
+    step_size: null
+    anchor_end: true
+    backtest_enabled: true
+    permutation_test:
+      enabled: false
+      n_runs: 3
+      seed: 42
 
 backtest:
   enabled: true
@@ -96,6 +108,7 @@ backtest:
   transaction_cost_bps: 10
   trading_days_per_year: 252
   long_only: true
+  short_k: null
   benchmark_symbol: null
   exit_mode: "rebalance"
   exit_horizon_days: null

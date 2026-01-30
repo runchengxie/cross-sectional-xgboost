@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
 
-from csxgb.metrics import daily_ic_series, summarize_ic, quantile_returns, estimate_turnover
+from csxgb.metrics import (
+    daily_ic_series,
+    summarize_ic,
+    quantile_returns,
+    estimate_turnover,
+    summarize_active_returns,
+)
 
 
 def test_daily_ic_series_perfect_rank():
@@ -56,3 +62,13 @@ def test_quantile_returns_insufficient_symbols():
     )
     q_ret = quantile_returns(df, "pred", "target", n_quantiles=5)
     assert q_ret.empty
+
+
+def test_summarize_active_returns_basic():
+    dates = pd.to_datetime(["2020-01-31", "2020-02-29"])
+    strategy = pd.Series([0.02, 0.01], index=dates)
+    benchmark = pd.Series([0.0, 0.02], index=dates)
+    stats, active = summarize_active_returns(strategy, benchmark, periods_per_year=2)
+    assert active.shape[0] == 2
+    assert np.isclose(stats["mean"], 0.005)
+    assert np.isfinite(stats["active_total_return"])

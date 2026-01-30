@@ -120,3 +120,70 @@ def estimate_turnover(
         index=pd.Index([date for date, _ in turnovers], name="trade_date"),
         name="turnover",
     )
+
+
+def summarize_active_returns(
+    strategy: pd.Series,
+    benchmark: pd.Series,
+    periods_per_year: float,
+) -> tuple[dict[str, float], pd.Series]:
+    aligned = pd.concat(
+        [strategy.rename("strategy"), benchmark.rename("benchmark")], axis=1
+    ).dropna()
+    if aligned.empty:
+        empty = pd.Series(dtype=float, name="active_return")
+        return {
+            "n": 0,
+            "mean": np.nan,
+            "std": np.nan,
+            "tracking_error": np.nan,
+            "information_ratio": np.nan,
+            "beta": np.nan,
+            "alpha": np.nan,
+            "corr": np.nan,
+            "active_total_return": np.nan,
+        }, empty
+
+    strategy = aligned["strategy"]
+    benchmark = aligned["benchmark"]
+    active = strategy - benchmark
+
+    mean = float(active.mean())
+    std = float(active.std(ddof=1)) if active.shape[0] > 1 else np.nan
+    if np.isfinite(std) and std > 0 and np.isfinite(periods_per_year):
+        tracking_error = std * np.sqrt(periods_per_year)
+        information_ratio = mean / std * np.sqrt(periods_per_year)
+    else:
+        tracking_error = np.nan
+        information_ratio = np.nan
+
+    bench_var = float(benchmark.var(ddof=1)) if benchmark.shape[0] > 1 else np.nan
+    if np.isfinite(bench_var) and bench_var > 0:
+        beta = float(strategy.cov(benchmark) / bench_var)
+    else:
+        beta = np.nan
+    if np.isfinite(beta) and np.isfinite(periods_per_year):
+        alpha = float((strategy.mean() - beta * benchmark.mean()) * periods_per_year)
+    else:
+        alpha = np.nan
+
+    corr = float(strategy.corr(benchmark)) if strategy.shape[0] > 1 else np.nan
+
+    strat_total = float((1 + strategy).prod() - 1.0)
+    bench_total = float((1 + benchmark).prod() - 1.0)
+    if np.isfinite(strat_total) and np.isfinite(bench_total):
+        active_total = (1 + strat_total) / (1 + bench_total) - 1.0
+    else:
+        active_total = np.nan
+
+    return {
+        "n": int(active.shape[0]),
+        "mean": mean,
+        "std": std,
+        "tracking_error": tracking_error,
+        "information_ratio": information_ratio,
+        "beta": beta,
+        "alpha": alpha,
+        "corr": corr,
+        "active_total_return": float(active_total) if np.isfinite(active_total) else np.nan,
+    }, active.rename("active_return")

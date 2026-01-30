@@ -174,8 +174,8 @@ CLI 已封装常用脚本（见上方命令速览），也可直接运行：
 * `label`：预测窗口、shift、winsorize
 * `features`：特征清单与窗口
 * `model`：XGBoost 参数
-* `eval`：切分、分位数、换手成本、embargo/purge，以及可选的 `report_train_ic`、`save_artifacts` 与 `permutation_test`
-* `backtest`：再平衡频率、Top-K、成本、基准与 `exit_mode`
+* `eval`：切分、分位数、换手成本、embargo/purge、`signal_direction_mode`，以及可选的 `report_train_ic`、`save_artifacts`、`permutation_test` 与 `walk_forward`
+* `backtest`：再平衡频率、Top-K、成本、`long_only/short_k`、基准与 `exit_mode`
 
 示例（生成指数成分列表）：
 

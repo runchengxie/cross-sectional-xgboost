@@ -31,15 +31,96 @@ import warnings
 
 from .config_utils import ResolvedConfig, resolve_pipeline_config
 from .data_providers import fetch_daily, load_basic, normalize_market, resolve_provider
-from .metrics import daily_ic_series, summarize_ic, quantile_returns, estimate_turnover
+from .metrics import (
+    daily_ic_series,
+    summarize_ic,
+    quantile_returns,
+    estimate_turnover,
+    summarize_active_returns,
+)
 from .transform import apply_cross_sectional_transform
 from .split import time_series_cv_ic
-from .backtest import backtest_topk
+from .backtest import backtest_topk, summarize_period_returns
 from .rebalance import estimate_rebalance_gap, get_rebalance_dates
 
 warnings.filterwarnings("ignore")
 
 logger = logging.getLogger("csxgb")
+
+
+def build_benchmark_series(
+    benchmark_df: Optional[pd.DataFrame],
+    price_col: str,
+    period_info: list[dict],
+) -> tuple[pd.Series, list[dict]]:
+    if benchmark_df is None or benchmark_df.empty:
+        return pd.Series(dtype=float, name="benchmark_return"), []
+    bench_prices = benchmark_df.set_index("trade_date")[price_col]
+    bench_returns = []
+    bench_index = []
+    bench_periods: list[dict] = []
+    for info in period_info:
+        entry_date = info["entry_date"]
+        exit_date = info["exit_date"]
+        if entry_date not in bench_prices.index or exit_date not in bench_prices.index:
+            continue
+        bench_returns.append(bench_prices.loc[exit_date] / bench_prices.loc[entry_date] - 1.0)
+        bench_index.append(exit_date)
+        bench_periods.append(info)
+    if not bench_returns:
+        return pd.Series(dtype=float, name="benchmark_return"), []
+    return pd.Series(bench_returns, index=bench_index, name="benchmark_return"), bench_periods
+
+
+def build_walk_forward_windows(
+    all_dates: np.ndarray,
+    test_size: float,
+    n_windows: int,
+    step_size: Optional[float],
+    gap_days: int,
+    anchor_end: bool,
+) -> list[dict]:
+    n_dates = len(all_dates)
+    if n_dates == 0:
+        return []
+    if test_size <= 0:
+        return []
+    test_len = int(test_size) if test_size >= 1 else int(n_dates * test_size)
+    test_len = max(1, test_len)
+    step = step_size
+    if step is None:
+        step = test_len
+    elif 0 < float(step) < 1:
+        step = int(n_dates * float(step))
+    step = max(1, int(step))
+
+    if anchor_end:
+        first_test_start = n_dates - test_len - step * (n_windows - 1)
+    else:
+        first_test_start = int(n_dates * (1 - test_size))
+    windows = []
+    for idx in range(n_windows):
+        test_start = first_test_start + idx * step
+        test_end = test_start + test_len
+        if test_start < 0 or test_end > n_dates:
+            continue
+        train_end = max(0, test_start - gap_days)
+        train_dates = all_dates[:train_end]
+        test_dates = all_dates[test_start:test_end]
+        if len(train_dates) == 0 or len(test_dates) == 0:
+            continue
+        windows.append(
+            {
+                "window": idx + 1,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "train_dates": train_dates,
+                "test_dates": test_dates,
+            }
+        )
+    return windows
 
 # -----------------------------------------------------------------------------
 # rqdatac workaround
@@ -462,7 +543,11 @@ def run(config_ref: str | Path | None = None) -> None:
     TOP_K = int(eval_cfg.get("top_k", 20))
     REBALANCE_FREQUENCY = eval_cfg.get("rebalance_frequency", "W")
     TRANSACTION_COST_BPS = float(eval_cfg.get("transaction_cost_bps", 10))
-    SIGNAL_DIRECTION = float(eval_cfg.get("signal_direction", 1.0))
+    SIGNAL_DIRECTION_MODE = str(eval_cfg.get("signal_direction_mode", "fixed")).strip().lower()
+    if SIGNAL_DIRECTION_MODE not in {"fixed", "train_ic", "cv_ic"}:
+        sys.exit("eval.signal_direction_mode must be one of: fixed, train_ic, cv_ic.")
+    SIGNAL_DIRECTION_RAW = eval_cfg.get("signal_direction", 1.0)
+    SIGNAL_DIRECTION = float(SIGNAL_DIRECTION_RAW) if SIGNAL_DIRECTION_RAW is not None else 1.0
     if SIGNAL_DIRECTION == 0:
         sys.exit("eval.signal_direction cannot be 0.")
     EMBARGO_DAYS = eval_cfg.get("embargo_days")
@@ -486,6 +571,42 @@ def run(config_ref: str | Path | None = None) -> None:
         PERM_TEST_SEED = int(PERM_TEST_SEED)
     if PERM_TEST_RUNS < 1:
         PERM_TEST_ENABLED = False
+
+    wf_cfg = eval_cfg.get("walk_forward") or {}
+    if isinstance(wf_cfg, dict):
+        WF_ENABLED = bool(wf_cfg.get("enabled", False))
+        WF_N_WINDOWS = int(wf_cfg.get("n_windows", 3))
+        WF_TEST_SIZE = wf_cfg.get("test_size", TEST_SIZE)
+        WF_STEP_SIZE = wf_cfg.get("step_size")
+        WF_ANCHOR_END = bool(wf_cfg.get("anchor_end", True))
+        WF_BACKTEST_ENABLED = bool(wf_cfg.get("backtest_enabled", backtest_cfg.get("enabled", True)))
+        wf_perm_cfg = wf_cfg.get("permutation_test")
+        if isinstance(wf_perm_cfg, dict):
+            WF_PERM_TEST_ENABLED = bool(wf_perm_cfg.get("enabled", False))
+            WF_PERM_TEST_RUNS = int(wf_perm_cfg.get("n_runs", PERM_TEST_RUNS))
+            WF_PERM_TEST_SEED = wf_perm_cfg.get("seed", PERM_TEST_SEED)
+        elif wf_perm_cfg is None:
+            WF_PERM_TEST_ENABLED = False
+            WF_PERM_TEST_RUNS = PERM_TEST_RUNS
+            WF_PERM_TEST_SEED = PERM_TEST_SEED
+        else:
+            WF_PERM_TEST_ENABLED = bool(wf_perm_cfg)
+            WF_PERM_TEST_RUNS = PERM_TEST_RUNS
+            WF_PERM_TEST_SEED = PERM_TEST_SEED
+    else:
+        WF_ENABLED = bool(wf_cfg)
+        WF_N_WINDOWS = 3
+        WF_TEST_SIZE = TEST_SIZE
+        WF_STEP_SIZE = None
+        WF_ANCHOR_END = True
+        WF_BACKTEST_ENABLED = bool(backtest_cfg.get("enabled", True))
+        WF_PERM_TEST_ENABLED = False
+        WF_PERM_TEST_RUNS = PERM_TEST_RUNS
+        WF_PERM_TEST_SEED = PERM_TEST_SEED
+    if WF_PERM_TEST_SEED is not None:
+        WF_PERM_TEST_SEED = int(WF_PERM_TEST_SEED)
+    if WF_PERM_TEST_RUNS < 1:
+        WF_PERM_TEST_ENABLED = False
 
     SAVE_ARTIFACTS = bool(eval_cfg.get("save_artifacts", True))
     OUTPUT_DIR = eval_cfg.get("output_dir", "out/runs")
@@ -542,9 +663,14 @@ def run(config_ref: str | Path | None = None) -> None:
     BACKTEST_TRADING_DAYS_PER_YEAR = int(backtest_cfg.get("trading_days_per_year", 252))
     BACKTEST_BENCHMARK = backtest_cfg.get("benchmark_symbol")
     BACKTEST_LONG_ONLY = bool(backtest_cfg.get("long_only", True))
-    BACKTEST_SIGNAL_DIRECTION = float(backtest_cfg.get("signal_direction", SIGNAL_DIRECTION))
-    if BACKTEST_SIGNAL_DIRECTION == 0:
-        sys.exit("backtest.signal_direction cannot be 0.")
+    BACKTEST_SIGNAL_DIRECTION_RAW = backtest_cfg.get("signal_direction")
+    if BACKTEST_SIGNAL_DIRECTION_RAW is not None:
+        BACKTEST_SIGNAL_DIRECTION_RAW = float(BACKTEST_SIGNAL_DIRECTION_RAW)
+        if BACKTEST_SIGNAL_DIRECTION_RAW == 0:
+            sys.exit("backtest.signal_direction cannot be 0.")
+    BACKTEST_SHORT_K = backtest_cfg.get("short_k")
+    if BACKTEST_SHORT_K is not None:
+        BACKTEST_SHORT_K = int(BACKTEST_SHORT_K)
     BACKTEST_EXIT_MODE = str(backtest_cfg.get("exit_mode", "rebalance")).strip().lower()
     if BACKTEST_EXIT_MODE not in {"rebalance", "label_horizon"}:
         sys.exit("backtest.exit_mode must be one of: rebalance, label_horizon.")
@@ -862,7 +988,181 @@ def run(config_ref: str | Path | None = None) -> None:
         return scores
 
 
-    cv_scores = time_series_cv_ic(
+    def evaluate_window(window_meta: dict) -> dict:
+        window_id = int(window_meta["window"])
+        train_dates = window_meta["train_dates"]
+        test_dates = window_meta["test_dates"]
+        train_df_w = df[df["trade_date"].isin(train_dates)].copy()
+        test_df_w = df[df["trade_date"].isin(test_dates)].copy()
+        result = {
+            "window": window_id,
+            "train_start": pd.to_datetime(window_meta["train_start"]).strftime("%Y-%m-%d"),
+            "train_end": pd.to_datetime(window_meta["train_end"]).strftime("%Y-%m-%d"),
+            "test_start": pd.to_datetime(window_meta["test_start"]).strftime("%Y-%m-%d"),
+            "test_end": pd.to_datetime(window_meta["test_end"]).strftime("%Y-%m-%d"),
+            "status": "ok",
+        }
+        if train_df_w.empty or test_df_w.empty:
+            result["status"] = "insufficient_data"
+            return result
+
+        direction = SIGNAL_DIRECTION
+        cv_stats = None
+        if SIGNAL_DIRECTION_MODE == "cv_ic":
+            cv_scores_w = time_series_cv_ic(
+                train_df_w,
+                FEATURES,
+                TARGET,
+                N_SPLITS,
+                EMBARGO_DAYS,
+                PURGE_DAYS,
+                XGB_PARAMS,
+                1.0,
+            )
+            if cv_scores_w:
+                cv_mean = float(np.nanmean(cv_scores_w))
+                cv_std = float(np.nanstd(cv_scores_w))
+                if np.isfinite(cv_mean) and cv_mean != 0:
+                    direction = float(np.sign(cv_mean))
+                cv_stats = {
+                    "mean": cv_mean,
+                    "std": cv_std,
+                    "scores": [float(score) for score in cv_scores_w],
+                }
+
+        model_w = XGBRegressor(**XGB_PARAMS)
+        model_w.fit(train_df_w[FEATURES], train_df_w[TARGET])
+
+        train_eval = train_df_w.copy()
+        train_eval["pred"] = model_w.predict(train_eval[FEATURES])
+        train_ic_raw_stats = None
+        if SIGNAL_DIRECTION_MODE == "train_ic":
+            train_ic_raw = daily_ic_series(train_eval, TARGET, "pred")
+            train_ic_raw_stats = summarize_ic(train_ic_raw)
+            raw_mean = train_ic_raw_stats.get("mean", np.nan)
+            if np.isfinite(raw_mean) and raw_mean != 0:
+                direction = float(np.sign(raw_mean))
+            else:
+                direction = 1.0
+
+        train_signal_col = "pred"
+        if direction != 1.0:
+            train_eval["signal"] = train_eval["pred"] * direction
+            train_signal_col = "signal"
+
+        train_ic_stats = {}
+        if REPORT_TRAIN_IC:
+            train_ic_stats = summarize_ic(daily_ic_series(train_eval, TARGET, train_signal_col))
+
+        test_eval = test_df_w.copy()
+        test_eval["pred"] = model_w.predict(test_eval[FEATURES])
+        signal_col_w = "pred"
+        if direction != 1.0:
+            test_eval["signal"] = test_eval["pred"] * direction
+            signal_col_w = "signal"
+
+        ic_stats_w = summarize_ic(daily_ic_series(test_eval, TARGET, signal_col_w))
+
+        perm_stats_w = None
+        if WF_PERM_TEST_ENABLED:
+            perm_scores = permutation_test_ic(
+                train_df_w,
+                test_df_w,
+                WF_PERM_TEST_RUNS,
+                WF_PERM_TEST_SEED,
+                direction,
+            )
+            if perm_scores:
+                perm_stats_w = {
+                    "mean": float(np.nanmean(perm_scores)),
+                    "std": float(np.nanstd(perm_scores)),
+                    "scores": [float(score) for score in perm_scores],
+                    "runs": int(len(perm_scores)),
+                }
+
+        trade_dates_sorted = sorted(test_eval["trade_date"].unique())
+        rebalance_dates_w = get_rebalance_dates(trade_dates_sorted, REBALANCE_FREQUENCY)
+        eval_df_w = test_eval[test_eval["trade_date"].isin(rebalance_dates_w)].copy()
+
+        quantile_ts_w = quantile_returns(eval_df_w, signal_col_w, TARGET, N_QUANTILES)
+        quantile_mean_w = quantile_ts_w.mean() if not quantile_ts_w.empty else pd.Series(dtype=float)
+        long_short_w = (
+            float(quantile_mean_w.iloc[-1] - quantile_mean_w.iloc[0])
+            if not quantile_mean_w.empty
+            else None
+        )
+
+        k_w = min(TOP_K, eval_df_w["ts_code"].nunique())
+        turnover_series_w = estimate_turnover(eval_df_w, signal_col_w, k_w, rebalance_dates_w)
+        turnover_mean_w = (
+            float(turnover_series_w.mean()) if not turnover_series_w.empty else None
+        )
+
+        bt_stats_w = None
+        bt_benchmark_stats_w = None
+        bt_active_stats_w = None
+        if WF_BACKTEST_ENABLED:
+            bt_pred_col = signal_col_w
+            bt_direction = direction if BACKTEST_SIGNAL_DIRECTION_RAW is None else BACKTEST_SIGNAL_DIRECTION_RAW
+            if bt_direction != direction:
+                test_eval["signal_bt"] = test_eval["pred"] * bt_direction
+                bt_pred_col = "signal_bt"
+            bt_rebalance = get_rebalance_dates(trade_dates_sorted, BACKTEST_REBALANCE_FREQUENCY)
+            try:
+                bt_result_w = backtest_topk(
+                    test_eval,
+                    pred_col=bt_pred_col,
+                    price_col=PRICE_COL,
+                    rebalance_dates=bt_rebalance,
+                    top_k=BACKTEST_TOP_K,
+                    shift_days=LABEL_SHIFT_DAYS,
+                    cost_bps=BACKTEST_COST_BPS,
+                    trading_days_per_year=BACKTEST_TRADING_DAYS_PER_YEAR,
+                    exit_mode=BACKTEST_EXIT_MODE,
+                    exit_horizon_days=BACKTEST_EXIT_HORIZON_DAYS,
+                    long_only=BACKTEST_LONG_ONLY,
+                    short_k=BACKTEST_SHORT_K,
+                )
+            except ValueError:
+                bt_result_w = None
+            if bt_result_w is not None:
+                bt_stats_w, bt_net_w, _, _, bt_periods_w = bt_result_w
+                if benchmark_df is not None and not benchmark_df.empty:
+                    bench_series_w, bench_periods_w = build_benchmark_series(
+                        benchmark_df, PRICE_COL, bt_periods_w
+                    )
+                    if not bench_series_w.empty:
+                        bt_benchmark_stats_w = summarize_period_returns(
+                            bench_series_w, bench_periods_w, BACKTEST_TRADING_DAYS_PER_YEAR
+                        )
+                        periods_per_year = bt_stats_w.get("periods_per_year", np.nan)
+                        bt_active_stats_w, _ = summarize_active_returns(
+                            bt_net_w, bench_series_w, periods_per_year
+                        )
+
+        result.update(
+            {
+                "signal_direction": direction,
+                "signal_direction_mode": SIGNAL_DIRECTION_MODE,
+                "cv_ic": cv_stats,
+                "train_ic": train_ic_stats if REPORT_TRAIN_IC else None,
+                "train_ic_raw": train_ic_raw_stats,
+                "test_ic": ic_stats_w,
+                "long_short": long_short_w,
+                "turnover_mean": turnover_mean_w,
+                "backtest": {
+                    "stats": bt_stats_w,
+                    "benchmark": bt_benchmark_stats_w,
+                    "active": bt_active_stats_w,
+                }
+                if WF_BACKTEST_ENABLED
+                else None,
+                "permutation_test": perm_stats_w,
+            }
+        )
+        return result
+
+    cv_scores_raw = time_series_cv_ic(
         train_df,
         FEATURES,
         TARGET,
@@ -870,13 +1170,24 @@ def run(config_ref: str | Path | None = None) -> None:
         EMBARGO_DAYS,
         PURGE_DAYS,
         XGB_PARAMS,
-        SIGNAL_DIRECTION,
+        1.0,
     )
-    if cv_scores:
-        logger.info("CV IC: mean=%.4f, std=%.4f", np.nanmean(cv_scores), np.nanstd(cv_scores))
-        logger.info("CV fold ICs: %s", [f"{s:.4f}" for s in cv_scores])
+    if cv_scores_raw:
+        logger.info(
+            "CV IC (raw): mean=%.4f, std=%.4f", np.nanmean(cv_scores_raw), np.nanstd(cv_scores_raw)
+        )
+        logger.info("CV fold ICs (raw): %s", [f"{s:.4f}" for s in cv_scores_raw])
     else:
         logger.info("CV IC not available - insufficient data after embargo/purge.")
+
+    cv_scores_adj = None
+    if SIGNAL_DIRECTION_MODE == "cv_ic" and cv_scores_raw:
+        cv_mean = float(np.nanmean(cv_scores_raw))
+        if np.isfinite(cv_mean) and cv_mean != 0:
+            SIGNAL_DIRECTION = float(np.sign(cv_mean))
+        else:
+            SIGNAL_DIRECTION = 1.0
+        logger.info("Signal direction set from CV IC: %s", SIGNAL_DIRECTION)
 
     # -----------------------------------------------------------------------------
     # 6. Fit final model
@@ -892,10 +1203,32 @@ def run(config_ref: str | Path | None = None) -> None:
 
     train_eval_df = train_df.copy()
     train_eval_df["pred"] = model.predict(train_eval_df[FEATURES])
+    train_ic_raw_stats = {}
+    if SIGNAL_DIRECTION_MODE == "train_ic":
+        train_ic_raw_series = daily_ic_series(train_eval_df, TARGET, "pred")
+        train_ic_raw_stats = summarize_ic(train_ic_raw_series)
+        raw_mean = train_ic_raw_stats.get("mean", np.nan)
+        if np.isfinite(raw_mean) and raw_mean != 0:
+            SIGNAL_DIRECTION = float(np.sign(raw_mean))
+        else:
+            SIGNAL_DIRECTION = 1.0
+        logger.info("Signal direction set from Train IC: %s", SIGNAL_DIRECTION)
+
     train_signal_col = "pred"
     if SIGNAL_DIRECTION != 1.0:
         train_eval_df["signal"] = train_eval_df["pred"] * SIGNAL_DIRECTION
         train_signal_col = "signal"
+
+    if cv_scores_raw:
+        cv_scores_adj = [float(score) * SIGNAL_DIRECTION for score in cv_scores_raw]
+        if SIGNAL_DIRECTION != 1.0:
+            logger.info(
+                "CV IC (adj): mean=%.4f, std=%.4f",
+                np.nanmean(cv_scores_adj),
+                np.nanstd(cv_scores_adj),
+            )
+            logger.info("CV fold ICs (adj): %s", [f\"{s:.4f}\" for s in cv_scores_adj])
+
     train_ic_series = pd.Series(dtype=float, name="ic")
     train_ic_stats = {}
     if REPORT_TRAIN_IC:
@@ -931,6 +1264,7 @@ def run(config_ref: str | Path | None = None) -> None:
         ic_stats["n"],
     )
 
+    perm_stats = None
     if PERM_TEST_ENABLED:
         logger.info("Permutation test (shuffle train labels within date) ...")
         perm_scores = permutation_test_ic(
@@ -950,6 +1284,28 @@ def run(config_ref: str | Path | None = None) -> None:
                 len(perm_scores),
             )
             logger.info("Permutation ICs: %s", [f"{s:.4f}" for s in perm_scores])
+            perm_stats = {
+                "mean": float(perm_mean),
+                "std": float(perm_std),
+                "scores": [float(score) for score in perm_scores],
+                "runs": int(len(perm_scores)),
+            }
+
+    cv_stats_raw = None
+    cv_stats = None
+    if cv_scores_raw:
+        cv_stats_raw = {
+            "mean": float(np.nanmean(cv_scores_raw)),
+            "std": float(np.nanstd(cv_scores_raw)),
+            "scores": [float(score) for score in cv_scores_raw],
+        }
+        if cv_scores_adj is None:
+            cv_scores_adj = [float(score) * SIGNAL_DIRECTION for score in cv_scores_raw]
+        cv_stats = {
+            "mean": float(np.nanmean(cv_scores_adj)),
+            "std": float(np.nanstd(cv_scores_adj)),
+            "scores": [float(score) for score in cv_scores_adj],
+        }
 
     # Quantile returns on rebalance dates
 
@@ -990,77 +1346,122 @@ def run(config_ref: str | Path | None = None) -> None:
             TRANSACTION_COST_BPS,
         )
 
+    BACKTEST_SIGNAL_DIRECTION = (
+        SIGNAL_DIRECTION if BACKTEST_SIGNAL_DIRECTION_RAW is None else BACKTEST_SIGNAL_DIRECTION_RAW
+    )
+
     bt_stats = None
     bt_net_series = pd.Series(dtype=float, name="net_return")
     bt_gross_series = pd.Series(dtype=float, name="gross_return")
     bt_turnover_series = pd.Series(dtype=float, name="turnover")
+    bt_benchmark_series = pd.Series(dtype=float, name="benchmark_return")
+    bt_active_series = pd.Series(dtype=float, name="active_return")
+    bt_benchmark_stats = None
+    bt_active_stats = None
     bt_periods: list[dict] = []
     bt_result = None
     bt_attempted = False
 
     if BACKTEST_ENABLED:
-        if not BACKTEST_LONG_ONLY:
-            logger.info("Backtest only supports long-only at the moment; set backtest.long_only: true.")
+        bt_rebalance = get_rebalance_dates(
+            sorted(test_df["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY
+        )
+        bt_pred_col = signal_col
+        if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
+            test_df["signal_bt"] = test_df["pred"] * BACKTEST_SIGNAL_DIRECTION
+            bt_pred_col = "signal_bt"
+        bt_attempted = True
+        try:
+            bt_result = backtest_topk(
+                test_df,
+                pred_col=bt_pred_col,
+                price_col=PRICE_COL,
+                rebalance_dates=bt_rebalance,
+                top_k=BACKTEST_TOP_K,
+                shift_days=LABEL_SHIFT_DAYS,
+                cost_bps=BACKTEST_COST_BPS,
+                trading_days_per_year=BACKTEST_TRADING_DAYS_PER_YEAR,
+                exit_mode=BACKTEST_EXIT_MODE,
+                exit_horizon_days=BACKTEST_EXIT_HORIZON_DAYS,
+                long_only=BACKTEST_LONG_ONLY,
+                short_k=BACKTEST_SHORT_K,
+            )
+        except ValueError as exc:
+            logger.warning("Backtest skipped: %s", exc)
+            bt_result = None
+
+    if bt_attempted:
+        if bt_result is None:
+            logger.info("Backtest not available - insufficient data.")
         else:
-            bt_rebalance = get_rebalance_dates(sorted(test_df["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY)
-            bt_pred_col = signal_col
-            if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
-                test_df["signal_bt"] = test_df["pred"] * BACKTEST_SIGNAL_DIRECTION
-                bt_pred_col = "signal_bt"
-            bt_attempted = True
-            try:
-                bt_result = backtest_topk(
-                    test_df,
-                    pred_col=bt_pred_col,
-                    price_col=PRICE_COL,
-                    rebalance_dates=bt_rebalance,
-                    top_k=BACKTEST_TOP_K,
-                    shift_days=LABEL_SHIFT_DAYS,
-                    cost_bps=BACKTEST_COST_BPS,
-                    trading_days_per_year=BACKTEST_TRADING_DAYS_PER_YEAR,
-                    exit_mode=BACKTEST_EXIT_MODE,
-                    exit_horizon_days=BACKTEST_EXIT_HORIZON_DAYS,
+            stats, net_series, gross_series, bt_turnover_series, period_info = bt_result
+            bt_stats = stats
+            bt_net_series = net_series
+            bt_gross_series = gross_series
+            bt_periods = period_info
+            mode_text = "long-only" if BACKTEST_LONG_ONLY else "long-short"
+            logger.info("Backtest (%s, top-K, exit_mode=%s):", mode_text, BACKTEST_EXIT_MODE)
+            logger.info("  periods: %s", stats["periods"])
+            logger.info("  total return: %.2f%%", stats["total_return"] * 100)
+            logger.info("  ann return: %.2f%%", stats["ann_return"] * 100)
+            logger.info("  ann vol: %.2f%%", stats["ann_vol"] * 100)
+            logger.info("  sharpe: %.2f", stats["sharpe"])
+            logger.info("  max drawdown: %.2f%%", stats["max_drawdown"] * 100)
+            if not np.isnan(stats["avg_turnover"]):
+                logger.info("  avg turnover: %.2f%%", stats["avg_turnover"] * 100)
+                logger.info("  avg cost drag: %.2f%%", stats["avg_cost_drag"] * 100)
+
+            if benchmark_df is not None and not benchmark_df.empty:
+                bench_series, bench_periods = build_benchmark_series(
+                    benchmark_df, PRICE_COL, period_info
                 )
-            except ValueError as exc:
-                logger.warning("Backtest skipped: %s", exc)
-                bt_result = None
+                if not bench_series.empty:
+                    bt_benchmark_series = bench_series
+                    bt_benchmark_stats = summarize_period_returns(
+                        bench_series, bench_periods, BACKTEST_TRADING_DAYS_PER_YEAR
+                    )
+                    logger.info(
+                        "  benchmark total return: %.2f%%", bt_benchmark_stats["total_return"] * 100
+                    )
+                    periods_per_year = stats.get("periods_per_year", np.nan)
+                    bt_active_stats, bt_active_series = summarize_active_returns(
+                        bt_net_series, bench_series, periods_per_year
+                    )
+                    if bt_active_stats and bt_active_stats.get("n", 0) > 0:
+                        logger.info(
+                            "  active total return: %.2f%%",
+                            bt_active_stats["active_total_return"] * 100,
+                        )
+                        if np.isfinite(bt_active_stats.get("information_ratio", np.nan)):
+                            logger.info(
+                                "  information ratio: %.2f",
+                                bt_active_stats["information_ratio"],
+                            )
+                        if np.isfinite(bt_active_stats.get("beta", np.nan)):
+                            logger.info("  beta: %.2f", bt_active_stats["beta"])
+                        if np.isfinite(bt_active_stats.get("alpha", np.nan)):
+                            logger.info("  alpha (ann): %.2f%%", bt_active_stats["alpha"] * 100)
 
-        if bt_attempted:
-            if bt_result is None:
-                logger.info("Backtest not available - insufficient data.")
-            else:
-                stats, net_series, gross_series, bt_turnover_series, period_info = bt_result
-                bt_stats = stats
-                bt_net_series = net_series
-                bt_gross_series = gross_series
-                bt_periods = period_info
-                logger.info("Backtest (long-only, top-K, exit_mode=%s):", BACKTEST_EXIT_MODE)
-                logger.info("  periods: %s", stats["periods"])
-                logger.info("  total return: %.2f%%", stats["total_return"] * 100)
-                logger.info("  ann return: %.2f%%", stats["ann_return"] * 100)
-                logger.info("  ann vol: %.2f%%", stats["ann_vol"] * 100)
-                logger.info("  sharpe: %.2f", stats["sharpe"])
-                logger.info("  max drawdown: %.2f%%", stats["max_drawdown"] * 100)
-                if not np.isnan(stats["avg_turnover"]):
-                    logger.info("  avg turnover: %.2f%%", stats["avg_turnover"] * 100)
-                    logger.info("  avg cost drag: %.2f%%", stats["avg_cost_drag"] * 100)
-
-                if benchmark_df is not None and not benchmark_df.empty:
-                    bench_prices = benchmark_df.set_index("trade_date")[PRICE_COL]
-                    bench_returns = []
-                    bench_index = []
-                    for info in period_info:
-                        entry_date = info["entry_date"]
-                        exit_date = info["exit_date"]
-                        if entry_date not in bench_prices.index or exit_date not in bench_prices.index:
-                            continue
-                        bench_returns.append(bench_prices.loc[exit_date] / bench_prices.loc[entry_date] - 1.0)
-                        bench_index.append(exit_date)
-                    if bench_returns:
-                        bench_series = pd.Series(bench_returns, index=bench_index, name="benchmark_return")
-                        bench_nav = (1 + bench_series).cumprod()
-                        bench_total = bench_nav.iloc[-1] - 1.0
-                        logger.info("  benchmark total return: %.2f%%", bench_total * 100)
+    walk_forward_results: list[dict] = []
+    if WF_ENABLED:
+        try:
+            wf_test_size = float(WF_TEST_SIZE)
+        except (TypeError, ValueError):
+            wf_test_size = TEST_SIZE
+        windows = build_walk_forward_windows(
+            all_dates,
+            wf_test_size,
+            WF_N_WINDOWS,
+            WF_STEP_SIZE,
+            EFFECTIVE_GAP_DAYS,
+            WF_ANCHOR_END,
+        )
+        if not windows:
+            logger.info("Walk-forward evaluation skipped: insufficient windows.")
+        else:
+            logger.info("Walk-forward evaluation: %s windows.", len(windows))
+            for window_meta in windows:
+                walk_forward_results.append(evaluate_window(window_meta))
 
     # Feature importance
     logger.info("Feature importance:")
@@ -1088,8 +1489,24 @@ def run(config_ref: str | Path | None = None) -> None:
             save_series(bt_net_series, run_dir / "backtest_net.csv", value_name="net_return")
             save_series(bt_gross_series, run_dir / "backtest_gross.csv", value_name="gross_return")
             save_series(bt_turnover_series, run_dir / "backtest_turnover.csv", value_name="turnover")
+            if not bt_benchmark_series.empty:
+                save_series(
+                    bt_benchmark_series, run_dir / "backtest_benchmark.csv", value_name="benchmark_return"
+                )
+            if not bt_active_series.empty:
+                save_series(bt_active_series, run_dir / "backtest_active.csv", value_name="active_return")
             if bt_periods:
                 pd.DataFrame(bt_periods).to_csv(run_dir / "backtest_periods.csv", index=False)
+
+        if perm_stats and perm_stats.get("scores"):
+            pd.DataFrame({"ic": perm_stats["scores"]}).to_csv(
+                run_dir / "permutation_test.csv", index=False
+            )
+
+        if walk_forward_results:
+            pd.DataFrame(walk_forward_results).to_csv(
+                run_dir / "walk_forward_summary.csv", index=False
+            )
 
         summary = {
             "run": {
@@ -1124,17 +1541,35 @@ def run(config_ref: str | Path | None = None) -> None:
             "eval": {
                 "ic": ic_stats,
                 "train_ic": train_ic_stats if REPORT_TRAIN_IC else None,
+                "train_ic_raw": train_ic_raw_stats if train_ic_raw_stats else None,
+                "cv_ic": cv_stats,
+                "cv_ic_raw": cv_stats_raw,
+                "signal_direction": SIGNAL_DIRECTION,
+                "signal_direction_mode": SIGNAL_DIRECTION_MODE,
                 "quantile_mean": quantile_mean.to_dict() if not quantile_mean.empty else {},
                 "long_short": float(quantile_mean.iloc[-1] - quantile_mean.iloc[0])
                 if not quantile_mean.empty
                 else None,
                 "turnover_mean": float(turnover_series.mean()) if not turnover_series.empty else None,
                 "turnover_count": int(turnover_series.shape[0]),
+                "permutation_test": perm_stats,
             },
             "backtest": {
                 "enabled": BACKTEST_ENABLED,
                 "exit_mode": BACKTEST_EXIT_MODE,
+                "mode": "long_only" if BACKTEST_LONG_ONLY else "long_short",
+                "benchmark_symbol": benchmark_symbol,
                 "stats": bt_stats,
+                "benchmark": bt_benchmark_stats,
+                "active": bt_active_stats,
+            },
+            "walk_forward": {
+                "enabled": WF_ENABLED,
+                "n_windows": WF_N_WINDOWS,
+                "test_size": WF_TEST_SIZE,
+                "step_size": WF_STEP_SIZE,
+                "anchor_end": WF_ANCHOR_END,
+                "results": walk_forward_results,
             },
         }
         save_json(summary, run_dir / "summary.json")

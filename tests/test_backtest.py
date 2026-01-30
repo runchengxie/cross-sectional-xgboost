@@ -111,3 +111,35 @@ def test_backtest_label_horizon_overlap_raises():
             exit_mode="label_horizon",
             exit_horizon_days=2,
         )
+
+
+def test_backtest_long_short_basic():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(
+                ["2020-01-01", "2020-01-01", "2020-01-02", "2020-01-02"]
+            ),
+            "ts_code": ["A", "B", "A", "B"],
+            "pred": [2.0, 1.0, 2.0, 1.0],
+            "close": [100.0, 100.0, 110.0, 90.0],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        long_only=False,
+        short_k=1,
+    )
+    stats, net_series, gross_series, turnover_series, _ = result
+    assert stats["periods"] == 1
+    assert np.isclose(gross_series.iloc[0], 0.2)
+    assert np.isclose(net_series.iloc[0], 0.2)
+    assert np.isclose(turnover_series.iloc[0], 2.0)
