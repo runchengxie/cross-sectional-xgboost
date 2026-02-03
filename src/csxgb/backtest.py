@@ -5,6 +5,7 @@ from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 
+from .portfolio import select_holdings
 
 def summarize_period_returns(
     returns: pd.Series,
@@ -145,65 +146,6 @@ def backtest_topk(
         overlap = len(set(current_holdings) & prev_set)
         return 1 - overlap / len(current_holdings)
 
-    def _select_holdings(
-        day: pd.DataFrame,
-        entry_date: pd.Timestamp,
-        k: int,
-        ascending: bool,
-        prev_holdings: Optional[set],
-        buffer_exit: int,
-        buffer_entry: int,
-    ) -> tuple[list[str], pd.Series]:
-        if day.empty or k <= 0:
-            return [], pd.Series(dtype=float)
-        if entry_date not in price_table.index:
-            return [], pd.Series(dtype=float)
-        ranked = day.sort_values(pred_col, ascending=ascending)
-        ranked_codes = ranked["ts_code"].tolist()
-        candidate_order: list[str]
-        if prev_holdings is None or (buffer_exit <= 0 and buffer_entry <= 0):
-            candidate_order = ranked_codes
-        else:
-            keep_limit = min(len(ranked_codes), k + max(0, buffer_exit))
-            entry_limit = min(len(ranked_codes), max(0, k - max(0, buffer_entry)))
-            keep_set = set(ranked_codes[:keep_limit]) & prev_holdings
-            candidate_order = [code for code in ranked_codes if code in keep_set]
-            preferred = set(ranked_codes[:entry_limit]) if entry_limit > 0 else set()
-            for code in ranked_codes:
-                if len(candidate_order) >= k:
-                    break
-                if code in candidate_order:
-                    continue
-                if preferred and code not in preferred:
-                    continue
-                candidate_order.append(code)
-            if len(candidate_order) < k:
-                for code in ranked_codes:
-                    if len(candidate_order) >= k:
-                        break
-                    if code in candidate_order:
-                        continue
-                    candidate_order.append(code)
-        entry_prices = price_table.loc[entry_date]
-        tradable_flags = None
-        if tradable_table is not None:
-            if entry_date not in tradable_table.index:
-                return [], pd.Series(dtype=float)
-            tradable_flags = tradable_table.loc[entry_date]
-        holdings: list[str] = []
-        for symbol in candidate_order:
-            if len(holdings) >= k:
-                break
-            price = entry_prices.get(symbol, np.nan)
-            if not np.isfinite(price):
-                continue
-            if tradable_flags is not None and not bool(tradable_flags.get(symbol, False)):
-                continue
-            holdings.append(symbol)
-        if not holdings:
-            return [], pd.Series(dtype=float)
-        return holdings, entry_prices.reindex(holdings)
-
     def _resolve_exit_idx(symbol: str, planned_exit_idx: int) -> Optional[int]:
         if planned_exit_idx >= len(trade_dates):
             return None
@@ -302,11 +244,14 @@ def backtest_topk(
 
         cost_per_side = cost_bps / 10000.0
         if long_only:
-            holdings, entry_prices = _select_holdings(
+            holdings, entry_prices = select_holdings(
                 day,
                 entry_date,
                 k,
+                pred_col,
                 ascending=False,
+                price_table=price_table,
+                tradable_table=tradable_table,
                 prev_holdings=prev_holdings,
                 buffer_exit=buffer_exit,
                 buffer_entry=buffer_entry,
@@ -341,20 +286,26 @@ def backtest_topk(
             if short_k_final <= 0:
                 continue
 
-            long_holdings, long_entry = _select_holdings(
+            long_holdings, long_entry = select_holdings(
                 day,
                 entry_date,
                 k,
+                pred_col,
                 ascending=False,
+                price_table=price_table,
+                tradable_table=tradable_table,
                 prev_holdings=prev_holdings,
                 buffer_exit=buffer_exit,
                 buffer_entry=buffer_entry,
             )
-            short_holdings, short_entry = _select_holdings(
+            short_holdings, short_entry = select_holdings(
                 day,
                 entry_date,
                 short_k_final,
+                pred_col,
                 ascending=True,
+                price_table=price_table,
+                tradable_table=tradable_table,
                 prev_holdings=prev_short_holdings,
                 buffer_exit=buffer_exit,
                 buffer_entry=buffer_entry,

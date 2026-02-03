@@ -126,6 +126,9 @@ csxgb run
 # Top-K × 成本敏感性网格
 csxgb grid --config config/hk.yml
 
+# 当期持仓清单（从最近一次 run 读取）
+csxgb holdings --config config/hk.yml --as-of t-1
+
 # RQData 信息 / 配额
 csxgb rqdata info
 csxgb rqdata quota
@@ -154,6 +157,7 @@ csxgb tushare verify-token
 * 特征重要性排序
 * 评估与回测产物默认落盘到 `out/runs/<run_name>_<timestamp>_<hash>/`
   * 典型产物：`summary.json`、`config.used.yml`、`ic_*.csv`、`quantile_returns.csv`、`backtest_*.csv`、`feature_importance.csv`
+  * 持仓清单：`positions_by_rebalance.csv`、`positions_current.csv`
 
 ## 回测假设与限制
 

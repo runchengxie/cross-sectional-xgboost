@@ -126,6 +126,26 @@ def _handle_grid(args) -> int:
     return 0
 
 
+def _handle_holdings(args) -> int:
+    from .project_tools import holdings
+
+    argv: list[str] = []
+    if getattr(args, "config", None):
+        argv += ["--config", args.config]
+    if getattr(args, "run_dir", None):
+        argv += ["--run-dir", args.run_dir]
+    if getattr(args, "top_k", None) is not None:
+        argv += ["--top-k", str(args.top_k)]
+    if getattr(args, "as_of", None):
+        argv += ["--as-of", args.as_of]
+    if getattr(args, "format", None):
+        argv += ["--format", args.format]
+    if getattr(args, "out", None):
+        argv += ["--out", args.out]
+    holdings.main(argv)
+    return 0
+
+
 def _handle_init_config(args) -> int:
     filename = resolve_pipeline_filename(args.market)
     content = read_package_text("csxgb.config", filename)
@@ -203,6 +223,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_grid.add_grid_args(grid)
     grid.set_defaults(func=_handle_grid)
+
+    holdings = subparsers.add_parser("holdings", help="Show latest holdings from saved runs")
+    holdings.add_argument(
+        "--config",
+        help="Pipeline config path or built-in name (default: default).",
+    )
+    holdings.add_argument(
+        "--run-dir",
+        help="Explicit run directory to read (overrides --config).",
+    )
+    holdings.add_argument(
+        "--top-k",
+        type=int,
+        help="Optional Top-K filter when selecting the latest run.",
+    )
+    holdings.add_argument(
+        "--as-of",
+        default="t-1",
+        help="As-of date (YYYYMMDD, YYYY-MM-DD, today, t-1). Default: t-1.",
+    )
+    holdings.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "csv", "json"],
+        help="Output format (text/csv/json). Default: text.",
+    )
+    holdings.add_argument(
+        "--out",
+        help="Optional output path (default: stdout).",
+    )
+    holdings.set_defaults(func=_handle_holdings)
 
     init_cfg = subparsers.add_parser(
         "init-config", help="Export a packaged config template to the filesystem"

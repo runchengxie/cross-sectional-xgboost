@@ -41,6 +41,7 @@ from .metrics import (
 from .transform import apply_cross_sectional_transform
 from .split import build_sample_weight, time_series_cv_ic
 from .backtest import backtest_topk, summarize_period_returns
+from .portfolio import build_positions_by_rebalance
 from .rebalance import estimate_rebalance_gap, get_rebalance_dates
 
 warnings.filterwarnings("ignore")
@@ -1708,6 +1709,32 @@ def run(config_ref: str | Path | None = None) -> None:
         SIGNAL_DIRECTION if BACKTEST_SIGNAL_DIRECTION_RAW is None else BACKTEST_SIGNAL_DIRECTION_RAW
     )
 
+    bt_rebalance = get_rebalance_dates(
+        sorted(test_df_full["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY
+    )
+    if valid_dates_set:
+        bt_rebalance = [d for d in bt_rebalance if d in valid_dates_set]
+    bt_pred_col = signal_col
+    if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
+        test_df_full["signal_bt"] = test_df_full["pred"] * BACKTEST_SIGNAL_DIRECTION
+        bt_pred_col = "signal_bt"
+
+    positions_by_rebalance = build_positions_by_rebalance(
+        test_df_full,
+        pred_col=bt_pred_col,
+        price_col=PRICE_COL,
+        rebalance_dates=bt_rebalance,
+        top_k=BACKTEST_TOP_K,
+        shift_days=LABEL_SHIFT_DAYS,
+        buffer_exit=BACKTEST_BUFFER_EXIT,
+        buffer_entry=BACKTEST_BUFFER_ENTRY,
+        long_only=BACKTEST_LONG_ONLY,
+        short_k=BACKTEST_SHORT_K,
+        tradable_col=BACKTEST_TRADABLE_COL if BACKTEST_TRADABLE_COL in test_df_full.columns else None,
+    )
+    positions_by_rebalance_path: Optional[Path] = None
+    positions_current_path: Optional[Path] = None
+
     bt_stats = None
     bt_net_series = pd.Series(dtype=float, name="net_return")
     bt_gross_series = pd.Series(dtype=float, name="gross_return")
@@ -1721,15 +1748,6 @@ def run(config_ref: str | Path | None = None) -> None:
     bt_attempted = False
 
     if BACKTEST_ENABLED:
-        bt_rebalance = get_rebalance_dates(
-            sorted(test_df_full["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY
-        )
-        if valid_dates_set:
-            bt_rebalance = [d for d in bt_rebalance if d in valid_dates_set]
-        bt_pred_col = signal_col
-        if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
-            test_df_full["signal_bt"] = test_df_full["pred"] * BACKTEST_SIGNAL_DIRECTION
-            bt_pred_col = "signal_bt"
         bt_attempted = True
         try:
             bt_result = backtest_topk(
@@ -1863,6 +1881,17 @@ def run(config_ref: str | Path | None = None) -> None:
             if bt_periods:
                 pd.DataFrame(bt_periods).to_csv(run_dir / "backtest_periods.csv", index=False)
 
+        if positions_by_rebalance is not None and not positions_by_rebalance.empty:
+            positions_by_rebalance_path = run_dir / "positions_by_rebalance.csv"
+            save_frame(positions_by_rebalance, positions_by_rebalance_path)
+            entry_dates = pd.to_datetime(positions_by_rebalance["entry_date"], errors="coerce")
+            if entry_dates.notna().any():
+                latest_entry = entry_dates.max()
+                positions_current = positions_by_rebalance[entry_dates == latest_entry].copy()
+                if not positions_current.empty:
+                    positions_current_path = run_dir / "positions_current.csv"
+                    save_frame(positions_current, positions_current_path)
+
         if perm_stats and perm_stats.get("scores"):
             pd.DataFrame({"ic": perm_stats["scores"]}).to_csv(
                 run_dir / "permutation_test.csv", index=False
@@ -1941,10 +1970,23 @@ def run(config_ref: str | Path | None = None) -> None:
                 "buffer_exit": BACKTEST_BUFFER_EXIT,
                 "buffer_entry": BACKTEST_BUFFER_ENTRY,
                 "mode": "long_only" if BACKTEST_LONG_ONLY else "long_short",
+                "top_k": BACKTEST_TOP_K,
+                "short_k": BACKTEST_SHORT_K,
+                "rebalance_frequency": BACKTEST_REBALANCE_FREQUENCY,
+                "signal_direction": BACKTEST_SIGNAL_DIRECTION,
                 "benchmark_symbol": benchmark_symbol,
                 "stats": bt_stats,
                 "benchmark": bt_benchmark_stats,
                 "active": bt_active_stats,
+            },
+            "positions": {
+                "by_rebalance_file": str(positions_by_rebalance_path)
+                if positions_by_rebalance_path
+                else None,
+                "current_file": str(positions_current_path) if positions_current_path else None,
+                "shift_days": LABEL_SHIFT_DAYS,
+                "buffer_exit": BACKTEST_BUFFER_EXIT,
+                "buffer_entry": BACKTEST_BUFFER_ENTRY,
             },
             "fundamentals": {
                 "enabled": FUNDAMENTALS_ENABLED,
