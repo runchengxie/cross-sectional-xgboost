@@ -175,8 +175,8 @@ CLI 已封装常用脚本（见上方命令速览），也可直接运行：
 
 * `python -m csxgb.project_tools.verify_tushare_tokens`：验证 TuShare Token 是否可用
 * `scripts/combine_code.py`：打包项目源码为单文件文本（用于归档/审查）
-* `scripts/run_grid.py`：批量跑 Top-K × 成本敏感性并汇总 CSV
-* `csxgb grid`：同上（更推荐，便于安装后直接使用）
+* `csxgb grid`：批量跑 Top-K × 成本敏感性并汇总 CSV（推荐）
+* `csxgb-grid`：同上（安装后可直接使用）
 * `python -m csxgb.project_tools.fetch_index_components`：拉取指数成分并导出为 `symbols_file` 列表
 * `python -m csxgb.project_tools.build_hk_connect_universe`：基于港股通 PIT + 成交额筛选生成 `out/universe/universe_by_date.csv`
 

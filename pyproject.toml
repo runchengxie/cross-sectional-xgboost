@@ -35,6 +35,7 @@ stats = [
 
 [project.scripts]
 csxgb = "csxgb.cli:main"
+csxgb-grid = "csxgb.project_tools.run_grid:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
