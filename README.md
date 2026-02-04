@@ -45,40 +45,6 @@ pip install -e .
 pip install -e .[rqdata]
 ```
 
-## 开发 / 测试
-
-建议至少跑语法检查与单测，避免低级语法问题混进主干：
-
-```bash
-python -m compileall src
-pytest
-```
-
-## 配置 TuShare Token（仅当 data.provider=tushare）
-
-主程序与工具脚本优先读取 `TUSHARE_TOKEN`，其次 `TUSHARE_TOKEN_2`，仅在兼容旧配置时才读取 `TUSHARE_API_KEY`。
-如果你已从 `.env.example` 复制到 `.env`，请确保补充 `TUSHARE_TOKEN`（可选 `TUSHARE_TOKEN_2` 作为备用）。
-默认会在重试时按顺序轮换 Token（可通过 `data.retry.rotate_tokens` 关闭）。
-
-示例 `.env`：
-
-```bash
-TUSHARE_TOKEN="replace-with-your-tushare-pro-token"
-TUSHARE_TOKEN_2="replace-with-your-second-tushare-pro-token"
-# Legacy alias (avoid using unless required by old setups)
-# TUSHARE_API_KEY="replace-with-your-tushare-pro-token"
-EODHD_API_TOKEN="replace-with-your-eodhd-token"
-RQDATA_USERNAME="your-user"
-RQDATA_PASSWORD="your-pass"
-```
-
-若使用 `direnv`：
-
-```bash
-cp .envrc.example .envrc
-direnv allow
-```
-
 ## 配置 RQData（仅当 data.provider=rqdata）
 
 需要安装 `rqdatac`（建议 `pip install -e .[rqdata]`）。项目仅用到日线行情接口，不要求 `rqdatac_hk`（除非你要用港股通成分股等扩展功能）。
@@ -95,27 +61,6 @@ data:
 ```
 
 也可使用环境变量 `RQDATA_USERNAME`（或 `RQDATA_USER`）/ `RQDATA_PASSWORD`（配置文件优先级更高）。
-
-## 配置 EODHD（仅当 data.provider=eodhd）
-
-使用环境变量 `EODHD_API_TOKEN`（或配置 `data.eodhd.api_token`）。可选字段：
-
-* `data.eodhd.exchange`：交易所代码（如 `HK`）。
-* `data.eodhd.hk_symbol_mode`：港股代码转换模式（`keep` / `strip_one` / `strip_all` / `pad4` / `pad5`）。
-* `data.eodhd.period` / `data.eodhd.order` / `data.eodhd.fmt`：用于日线接口的参数透传。
-
-## 运行
-
-```bash
-csxgb run
-csxgb run --config config/cn.yml
-csxgb run --config config/hk.yml
-csxgb run --config config/us.yml
-```
-
-不传 `--config` 时使用内置 `default.yml`。
-
-若需要生成可编辑的本地配置文件，可运行：`csxgb init-config --market cn`（或 `hk` / `us` / `default`）。
 
 ## CLI 命令速览
 
@@ -135,20 +80,10 @@ csxgb holdings --config config/hk.yml --top-k 10
 # RQData 信息 / 配额
 csxgb rqdata info
 csxgb rqdata quota
-```
-
-注：`csxgb grid` 现在支持直接传参，无需 `--` 透传。
-
-注：`rqdata` 命令需要安装可选依赖 `.[rqdata]`。
-
-```bash
 
 # 指数成分与港股通股票池（参数透传给原脚本）
 csxgb universe index-components --index-code 000300.SH --month 202501
 csxgb universe hk-connect --mode daily
-
-# TuShare token 验证
-csxgb tushare verify-token
 ```
 
 输出包含：
