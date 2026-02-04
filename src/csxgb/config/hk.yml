@@ -6,6 +6,9 @@ data:
   end_date: "20251231"
   cache_dir: "cache"
   cache_tag: null
+  cache_mode: "symbol"
+  cache_refresh_days: 10
+  cache_refresh_on_hit: false
   price_col: "close"
   retry:
     max_attempts: 1

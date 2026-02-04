@@ -256,6 +256,24 @@ def _cache_tag(data_cfg: Optional[Mapping]) -> Optional[str]:
     return _sanitize_cache_tag(tag)
 
 
+def _normalize_trade_date_series(series: pd.Series) -> pd.Series:
+    if series.empty:
+        return series.astype(str)
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series.dt.strftime("%Y%m%d")
+    parsed = pd.to_datetime(series.astype(str), errors="coerce")
+    return parsed.dt.strftime("%Y%m%d")
+
+
+def _ensure_trade_date_str(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "trade_date" not in df.columns:
+        return df
+    df = df.copy()
+    df["trade_date"] = _normalize_trade_date_series(df["trade_date"])
+    df = df[df["trade_date"].notna()].copy()
+    return df
+
+
 def _resolve_eodhd_config(data_cfg: Mapping, client) -> dict:
     eod_cfg = data_cfg.get("eodhd") if isinstance(data_cfg, Mapping) else None
     resolved = dict(eod_cfg) if isinstance(eod_cfg, Mapping) else {}
@@ -571,26 +589,15 @@ def _resolve_endpoint_params(
     return params
 
 
-def fetch_daily(
+def _fetch_daily_from_provider(
+    provider: str,
     market: str,
     symbol: str,
     start_date: str,
     end_date: str,
-    cache_dir: Path,
     client,
-    data_cfg: Optional[Mapping] = None,
+    data_cfg: Mapping,
 ) -> pd.DataFrame:
-    market = normalize_market(market)
-    data_cfg = data_cfg or {}
-    provider = resolve_provider(data_cfg)
-    tag = _cache_tag(data_cfg)
-    prefix = f"{market}_{provider}"
-    if tag:
-        prefix = f"{prefix}_{tag}"
-    cache_file = cache_dir / f"{prefix}_daily_{symbol}_{start_date}_{end_date}.parquet"
-    if cache_file.exists():
-        return pd.read_parquet(cache_file)
-
     if provider == "rqdata":
         df = _fetch_daily_rqdata(market, symbol, start_date, end_date, client, data_cfg)
     elif provider == "tushare":
@@ -627,12 +634,121 @@ def fetch_daily(
         raise ValueError(f"Unsupported data provider '{provider}'.")
     if df is None or df.empty:
         return df
+    return _standardize_daily_frame(df, market, data_cfg, symbol)
 
-    df = _standardize_daily_frame(df, market, data_cfg, symbol)
-    # Ensure buffers are writable before parquet serialization.
-    df = df.copy(deep=True)
-    df.to_parquet(cache_file)
-    return df
+
+def fetch_daily(
+    market: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    cache_dir: Path,
+    client,
+    data_cfg: Optional[Mapping] = None,
+) -> pd.DataFrame:
+    market = normalize_market(market)
+    data_cfg = data_cfg or {}
+    provider = resolve_provider(data_cfg)
+    start_date = str(start_date).strip()
+    end_date = str(end_date).strip()
+    tag = _cache_tag(data_cfg)
+    prefix = f"{market}_{provider}"
+    if tag:
+        prefix = f"{prefix}_{tag}"
+    cache_mode = str(
+        data_cfg.get("daily_cache_mode", data_cfg.get("cache_mode", "symbol"))
+    ).strip().lower()
+    if cache_mode in {"range", "window"}:
+        cache_file = cache_dir / f"{prefix}_daily_{symbol}_{start_date}_{end_date}.parquet"
+        if cache_file.exists():
+            return pd.read_parquet(cache_file)
+        df = _fetch_daily_from_provider(provider, market, symbol, start_date, end_date, client, data_cfg)
+        if df is None or df.empty:
+            return df
+        # Ensure buffers are writable before parquet serialization.
+        df = df.copy(deep=True)
+        df.to_parquet(cache_file)
+        return df
+
+    cache_file = cache_dir / f"{prefix}_daily_{symbol}.parquet"
+    cached = None
+    trade_dates = []
+    if cache_file.exists():
+        cached = pd.read_parquet(cache_file)
+        cached = _ensure_trade_date_str(cached)
+        if cached is not None and not cached.empty and "trade_date" in cached.columns:
+            trade_dates = sorted(cached["trade_date"].unique().tolist())
+            if not trade_dates:
+                cached = None
+
+    refresh_days = int(data_cfg.get("cache_refresh_days", 0) or 0)
+    refresh_days = max(0, refresh_days)
+    refresh_on_hit = bool(data_cfg.get("cache_refresh_on_hit", False))
+
+    fetch_ranges: list[tuple[str, str]] = []
+    if cached is None or cached.empty or not trade_dates:
+        fetch_ranges.append((start_date, end_date))
+    else:
+        cached_min, cached_max = trade_dates[0], trade_dates[-1]
+        if start_date < cached_min:
+            left_end = min(end_date, cached_min)
+            if start_date <= left_end:
+                fetch_ranges.append((start_date, left_end))
+        if end_date > cached_max:
+            refresh_start = cached_max
+            if refresh_days > 0:
+                idx = max(0, len(trade_dates) - refresh_days)
+                refresh_start = trade_dates[idx]
+            if refresh_start < start_date:
+                refresh_start = start_date
+            fetch_ranges.append((refresh_start, end_date))
+        elif refresh_on_hit and refresh_days > 0 and end_date >= cached_min:
+            idx = max(0, len(trade_dates) - refresh_days)
+            refresh_start = trade_dates[idx]
+            if refresh_start < start_date:
+                refresh_start = start_date
+            if refresh_start <= end_date:
+                fetch_ranges.append((refresh_start, end_date))
+
+    new_frames: list[pd.DataFrame] = []
+    for fetch_start, fetch_end in fetch_ranges:
+        if fetch_start > fetch_end:
+            continue
+        df_new = _fetch_daily_from_provider(
+            provider, market, symbol, fetch_start, fetch_end, client, data_cfg
+        )
+        if df_new is None or df_new.empty:
+            continue
+        df_new = _ensure_trade_date_str(df_new)
+        if df_new is not None and not df_new.empty:
+            new_frames.append(df_new)
+
+    if cached is None or cached.empty:
+        if not new_frames:
+            return pd.DataFrame()
+        merged = pd.concat(new_frames, ignore_index=True) if len(new_frames) > 1 else new_frames[0]
+        updated = True
+    else:
+        if new_frames:
+            merged = pd.concat([cached] + new_frames, ignore_index=True)
+            updated = True
+        else:
+            merged = cached
+            updated = False
+
+    merged = _ensure_trade_date_str(merged)
+    if merged is None or merged.empty:
+        return pd.DataFrame()
+
+    if updated:
+        merged = merged.drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
+        merged.sort_values(["ts_code", "trade_date"], inplace=True)
+        # Ensure buffers are writable before parquet serialization.
+        merged = merged.copy(deep=True)
+        merged.to_parquet(cache_file)
+
+    mask = (merged["trade_date"] >= start_date) & (merged["trade_date"] <= end_date)
+    return merged.loc[mask].copy()
 
 
 def load_basic(
