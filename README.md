@@ -153,7 +153,8 @@ csxgb snapshot --run-dir out/live_runs/<run_dir>
 
 # RQData 信息 / 配额
 csxgb rqdata info
-csxgb rqdata quota
+csxgb rqdata quota           # JSON，含百分比与剩余量
+csxgb rqdata quota --pretty  # 人类可读 + 进度条
 
 # 指数成分与港股通股票池
 csxgb universe index-components --index-code 000300.SH --month 202501

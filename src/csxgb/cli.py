@@ -9,6 +9,133 @@ from dotenv import load_dotenv
 from .config_utils import read_package_text, resolve_pipeline_config, resolve_pipeline_filename
 
 
+def _format_bytes(value: float) -> str:
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+
+
+def _render_pct_bar(pct: float, width: int = 20) -> str:
+    if pct <= 0:
+        filled = 0
+    elif pct >= 100:
+        filled = width
+    else:
+        filled = int(round(width * pct / 100))
+    return f"[{'#' * filled}{'-' * (width - filled)}] {pct:.2f}%"
+
+
+def _coerce_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _augment_quota_entry(entry: dict) -> dict:
+    bytes_used = _coerce_float(entry.get("bytes_used"))
+    bytes_limit = _coerce_float(entry.get("bytes_limit"))
+    if bytes_used is None or bytes_limit is None:
+        return entry
+    if bytes_limit <= 0:
+        return entry
+    used_pct = min(bytes_used / bytes_limit * 100.0, 100.0)
+    remaining_pct = max(0.0, 100.0 - used_pct)
+    bytes_remaining = max(bytes_limit - bytes_used, 0.0)
+    entry["bytes_remaining"] = bytes_remaining
+    entry["used_pct"] = round(used_pct, 2)
+    entry["remaining_pct"] = round(remaining_pct, 2)
+    return entry
+
+
+def _augment_quota_payload(payload):
+    if isinstance(payload, dict):
+        return _augment_quota_entry(payload)
+    if isinstance(payload, list):
+        updated = []
+        for entry in payload:
+            if isinstance(entry, dict):
+                updated.append(_augment_quota_entry(entry))
+            else:
+                updated.append(entry)
+        return updated
+    return payload
+
+
+def _format_quota_entry(entry: dict, label: str | None = None) -> str:
+    lines: list[str] = []
+    if label:
+        lines.append(label)
+    if "license_type" in entry:
+        lines.append(f"license_type: {entry.get('license_type')}")
+    if "remaining_days" in entry:
+        lines.append(f"remaining_days: {entry.get('remaining_days')}")
+
+    bytes_used = entry.get("bytes_used")
+    bytes_limit = entry.get("bytes_limit")
+    bytes_remaining = entry.get("bytes_remaining")
+    used_pct = entry.get("used_pct")
+    remaining_pct = entry.get("remaining_pct")
+
+    bytes_used_val = _coerce_float(bytes_used)
+    bytes_limit_val = _coerce_float(bytes_limit)
+    bytes_remaining_val = _coerce_float(bytes_remaining)
+    used_pct_val = _coerce_float(used_pct)
+    remaining_pct_val = _coerce_float(remaining_pct)
+
+    if bytes_used_val is not None:
+        lines.append(
+            f"bytes_used: {_format_bytes(bytes_used_val)} ({int(bytes_used_val)} B)"
+        )
+    elif bytes_used is not None:
+        lines.append(f"bytes_used: {bytes_used}")
+
+    if bytes_limit_val is not None:
+        lines.append(
+            f"bytes_limit: {_format_bytes(bytes_limit_val)} ({int(bytes_limit_val)} B)"
+        )
+    elif bytes_limit is not None:
+        lines.append(f"bytes_limit: {bytes_limit}")
+
+    if bytes_remaining_val is not None:
+        lines.append(
+            f"bytes_remaining: {_format_bytes(bytes_remaining_val)} ({int(bytes_remaining_val)} B)"
+        )
+    elif bytes_remaining is not None:
+        lines.append(f"bytes_remaining: {bytes_remaining}")
+
+    if used_pct_val is not None:
+        lines.append(f"used_pct: {used_pct_val:.2f}%")
+    elif used_pct is not None:
+        lines.append(f"used_pct: {used_pct}")
+
+    if remaining_pct_val is not None:
+        lines.append(f"remaining_pct: {remaining_pct_val:.2f}%")
+    elif remaining_pct is not None:
+        lines.append(f"remaining_pct: {remaining_pct}")
+
+    if used_pct_val is not None:
+        lines.append(f"usage: {_render_pct_bar(used_pct_val)} used")
+    return "\n".join(lines)
+
+
+def _format_quota_pretty(payload) -> str:
+    if isinstance(payload, dict):
+        return _format_quota_entry(payload, label="Quota usage")
+    if isinstance(payload, list):
+        blocks: list[str] = []
+        for idx, entry in enumerate(payload, start=1):
+            if isinstance(entry, dict):
+                blocks.append(_format_quota_entry(entry, label=f"Quota usage #{idx}"))
+            else:
+                blocks.append(f"Quota usage #{idx}\n{entry}")
+        return "\n\n".join(blocks)
+    return str(payload)
+
+
 def _load_config(path: str | None) -> dict:
     if not path:
         return {}
@@ -73,7 +200,11 @@ def _handle_rqdata_quota(args) -> int:
             payload = quota.to_dict(orient="records")
         except TypeError:
             payload = quota.to_dict()
-    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    payload = _augment_quota_payload(payload)
+    if getattr(args, "pretty", False):
+        print(_format_quota_pretty(payload))
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     return 0
 
 
@@ -219,6 +350,11 @@ def build_parser() -> argparse.ArgumentParser:
     rq_quota.add_argument("--config", help="Optional config path to load rqdata.init")
     rq_quota.add_argument("--username", help="Override RQData username")
     rq_quota.add_argument("--password", help="Override RQData password")
+    rq_quota.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Show human-friendly output with percent and progress bar",
+    )
     rq_quota.set_defaults(func=_handle_rqdata_quota)
 
     universe = subparsers.add_parser("universe", help="Universe construction helpers")
