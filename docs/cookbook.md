@@ -1,6 +1,7 @@
 # Cookbook
 
-**SOP：港股通 PIT + 成本/Top-K 网格对照**
+## 港股通 PIT + 成本/Top-K 网格对照
+
 ```bash
 # 1) 生成港股通 PIT + 流动性池
 csxgb universe hk-connect --config config/universe.hk_connect.yml
@@ -13,6 +14,7 @@ ls -lh out/runs/grid_summary.csv
 ```
 
 覆盖默认网格参数：
+
 ```bash
 csxgb grid --config config/hk.yml \
   --top-k 5,10 \
