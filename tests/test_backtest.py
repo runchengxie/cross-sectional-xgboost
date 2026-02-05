@@ -213,3 +213,87 @@ def test_backtest_buffer_reduces_turnover():
     _, _, _, turnover_series, _ = result
     assert turnover_series.shape[0] == 2
     assert np.isclose(turnover_series.iloc[1], 0.0)
+
+
+def test_backtest_exit_strict_skips_missing_price():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2020-01-01", "2020-01-02"]),
+            "ts_code": ["A", "A"],
+            "pred": [1.0, 1.0],
+            "close": [100.0, np.nan],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        exit_price_policy="strict",
+    )
+    assert result is None
+
+
+def test_backtest_exit_ffill_uses_last_price():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2020-01-01", "2020-01-02"]),
+            "ts_code": ["A", "A"],
+            "pred": [1.0, 1.0],
+            "close": [100.0, np.nan],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        exit_price_policy="ffill",
+    )
+    assert result is not None
+    _, net_series, _, _, _ = result
+    assert net_series.index[0] == pd.Timestamp("2020-01-02")
+    assert np.isclose(net_series.iloc[0], 0.0)
+
+
+def test_backtest_tradable_filters_entry_selection():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(
+                ["2020-01-01", "2020-01-01", "2020-01-02", "2020-01-02"]
+            ),
+            "ts_code": ["A", "B", "A", "B"],
+            "pred": [2.0, 1.0, 2.0, 1.0],
+            "close": [100.0, 100.0, 110.0, 90.0],
+            "is_tradable": [False, True, False, True],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        exit_price_policy="strict",
+        tradable_col="is_tradable",
+    )
+    assert result is not None
+    _, net_series, _, _, _ = result
+    assert np.isclose(net_series.iloc[0], -0.10)

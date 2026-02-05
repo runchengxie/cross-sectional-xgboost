@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from csxgb import pipeline
@@ -30,6 +31,7 @@ def _build_daily_frames(symbols: list[str], dates: pd.DatetimeIndex) -> dict[str
     return frames
 
 
+@pytest.mark.integration
 def test_pipeline_run_offline(tmp_path, monkeypatch):
     dates = pd.date_range("2020-01-01", periods=60, freq="B")
     symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
