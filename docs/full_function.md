@@ -1,6 +1,6 @@
 # 这个项目整体在做哪些事
 
-你可以把它理解成一个命令行量化小工厂：给它一份配置，它会产出“训练结果 + 回测结果 + 持仓文件 + 一堆可追溯的产物”。
+你命令行量化全流程：给它一份配置，它会产出训练结果 + 回测结果 + 持仓文件 + 可追溯的文档记录。
 
 ### 1) 选市场、选股票池（Universe）
 
@@ -18,7 +18,7 @@
 
 ### 3) 打标签（label）
 
-你这里不是随便预测明天涨跌，而是有“按再平衡周期定义的未来收益”这种更贴近组合交易的标签逻辑，比如 `horizon_mode: next_rebalance`、`rebalance_frequency: M`、`shift_days` 等。
+对数据进行按再平衡周期定义的未来收益这种更贴近组合交易的标签逻辑，比如 `horizon_mode: next_rebalance`、`rebalance_frequency: M`、`shift_days` 等。
 
 ### 4) 做特征（features）
 
@@ -28,9 +28,7 @@
 
 配置里就是 XGB regressor，带一堆常用参数（n_estimators、max_depth、subsample…）以及 sample_weight 方案。
 
-### 6) 评估（不是随便跑个分数）
-
-它做的不只是 train/test：
+### 6) 评估
 
 * n_splits、分位数分组、IC/IR 等（你还带了 `signal_direction_mode`、`min_abs_ic_to_flip` 这类“信号方向自适应/反转阈值”的逻辑）。
 * permutation test（打乱标签检验是不是靠运气）。
@@ -40,37 +38,37 @@
 
 回测参数很全：Top-K、再平衡频率、单边成本 bps、buffer 规则、exit_mode、价格/缺失处理策略等。
 
-而且它会落盘一堆持仓文件：`positions_by_rebalance.csv`、`positions_current.csv`，以及 OOS 和 live 版本。
+而且它会落盘持仓文件：`positions_by_rebalance.csv`、`positions_current.csv`，以及 OOS 和 live 版本。
 
 ### 8) 把这一切包装成 CLI 工具，可复现、可“实盘化”
 
-你有完整 CLI：`run/grid/holdings/snapshot/rqdata quota/.../universe hk-connect`。
+完整 CLI：`run/grid/holdings/snapshot/rqdata quota/.../universe hk-connect`。
 输出目录结构也规定了：每次 run 一个带 hash/timestamp 的目录，里面有 `summary.json`、`config.used.yml`、回测/IC/特征重要性/持仓等。
-`holdings` 甚至会去读最新 run 的 `summary.json` 来决定用 backtest 还是 live 的持仓文件，还支持 `t-1/today` 这种日期 token。
+`holdings` 会去读最新 run 的 `summary.json` 来决定用 backtest 还是 live 的持仓文件，并支持 `t-1/today` 这种日期 token。
 
-## 这项目到底难在哪里（不是“代码写不出来”，是“对不对”）
+## 项目难点
 
-把它难点拆开，你就会发现每一块都在给人类上强度：
+把它难点拆开
 
 1. 数据层永远不干净
-   多数据源、多市场、不同 symbol 格式、字段命名不一致、缺失值、停牌处理。你代码里专门有 column candidates 和 symbol 转换逻辑，这不是装饰，是现实的泥潭。
+   多数据源、多市场、不同 symbol 格式、字段命名不一致、缺失值、停牌处理。代码里专门有 column candidates 和 symbol 转换逻辑。
 
-2. 股票池是“按日期变的”才像真的
+2. 股票池是按日期变的才像真的
    PIT universe、港股通过滤、流动性筛选，这些一做就会牵扯交易日历、上市天数、停牌策略等。
 
-3. 最阴险的是“无意中泄漏未来信息”
-   你已经在配置里放了很多避免自嗨的机制：按再平衡日期抽样、embargo/purge、next_rebalance horizon 等。写出来不难，写对并在每一步都不破功才难。
+3. 避免无意中泄漏未来信息
+   配置里放了很多避免未来信息的机制：按再平衡日期抽样、embargo/purge、next_rebalance horizon 等。
 
 4. 评估不是一个指标能解决的
-   IC/分位数、方向翻转阈值、walk-forward、permutation test 这些都是为了回答同一个问题：你是不是在“撞运气”。每加一项，代码复杂度指数上升。  
+   IC/分位数、方向翻转阈值、walk-forward、permutation test 这些都是为了回答同一个问题：模型是不是在“撞运气”。  
 
-5. 回测细节决定你是在做研究还是写小说
-   成本、buffer、退出机制、价格延迟/填充策略、再平衡间隔和标签周期的一致性检查，这些都是“写错了也能跑，但跑出来全是幻觉”的典型区域。
+5. 回测细节
+   成本、buffer、退出机制、价格延迟/填充策略、再平衡间隔和标签周期的一致性检查。
 
 6. 可复现和可操作性是工程难点，不是模型难点
-   run 目录、summary/config.used、positions 输出、`holdings/snapshot` 读最新结果，这些是“让你能持续用下去”的部分。把它们拼起来，比训练一个 XGBoost 更折磨人。
+   run 目录、summary/config.used、positions 输出、`holdings/snapshot` 读最新结果。
 
-7. 网格搜索现在是“批量跑实验”，不是“只调回测参数”
+7. 网格搜索是批量实验
    你的 grid 会为每个组合写临时 config，然后直接 `pipeline.run()`，再去磁盘找 `summary.json` 抄一行进 CSV。
    这也是你前面觉得“怎么这么慢”的根本原因之一。
 
