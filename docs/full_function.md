@@ -36,11 +36,20 @@
 
 ### 7) 回测（Top-K 组合 + 成本 + 交易规则）
 
-回测参数很全：Top-K、再平衡频率、单边成本 bps、buffer 规则、exit_mode、价格/缺失处理策略等。
+回测参数包括：Top-K、再平衡频率、单边成本 bps、buffer 规则、exit_mode、价格/缺失处理策略等。
 
 而且它会落盘持仓文件：`positions_by_rebalance.csv`、`positions_current.csv`，以及 OOS 和 live 版本。
 
-### 8) 把这一切包装成 CLI 工具，可复现、可“实盘化”
+输出产物清单：
+
+* 产物目录：`out/runs/<run_name>_<timestamp>_<hash>/`
+* 典型产物：`summary.json`、`config.used.yml`、`ic_*.csv`、`quantile_returns.csv`、`backtest_*.csv`、`feature_importance.csv`
+* 持仓清单：`positions_by_rebalance.csv`、`positions_current.csv`、`signal_asof`、`next_entry_date`、`holding_window` 字段；`holding_window` 约定为 `entry_date -> next_entry_date`（next 为空表示最新持仓区间）。
+* Live 持仓清单：`positions_by_rebalance_live.csv`、`positions_current_live.csv`
+* 再平衡差异：`rebalance_diff.csv`、`rebalance_diff_live.csv`
+* Live 最新指针：`out/live_runs/latest.json`（指向最新 live run）
+
+### 8) 把这一切包装成 CLI 工具，可复现、可实盘化
 
 完整 CLI：`run/grid/holdings/snapshot/rqdata quota/.../universe hk-connect`。
 输出目录结构也规定了：每次 run 一个带 hash/timestamp 的目录，里面有 `summary.json`、`config.used.yml`、回测/IC/特征重要性/持仓等。

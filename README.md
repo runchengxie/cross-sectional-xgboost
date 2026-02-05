@@ -172,7 +172,7 @@ csxgb universe hk-connect --mode daily
 
 * 产物目录：`out/runs/<run_name>_<timestamp>_<hash>/`
 * 典型产物：`summary.json`、`config.used.yml`、`ic_*.csv`、`quantile_returns.csv`、`backtest_*.csv`、`feature_importance.csv`
-* 持仓清单：`positions_by_rebalance.csv`、`positions_current.csv`
+* 持仓清单：`positions_by_rebalance.csv`、`positions_current.csv`、`signal_asof`、`next_entry_date`、`holding_window` 字段；`holding_window` 约定为 `entry_date -> next_entry_date`（next 为空表示最新持仓区间）。
 * Live 持仓清单：`positions_by_rebalance_live.csv`、`positions_current_live.csv`
 * 再平衡差异：`rebalance_diff.csv`、`rebalance_diff_live.csv`
 * Live 最新指针：`out/live_runs/latest.json`（指向最新 live run）
@@ -182,9 +182,8 @@ csxgb universe hk-connect --mode daily
 * 回测为 long-only Top-K 等权组合，按再平衡周期持有。
 * 成交价使用 `price_col`（默认 close）并在 `rebalance_date + shift_days` 入场、下一次再平衡/持有期结束出场；近似 EOD 策略。
 * 持仓快照输出的是 target holdings，`entry_date = rebalance_date + shift_days`。当 `shift_days=1` 时，月末信号对应次月首个交易日入场，“当月持仓”可能仍是上月组合。
-* 持仓文件新增 `signal_asof`、`next_entry_date`、`holding_window` 字段；`holding_window` 约定为 `entry_date -> next_entry_date`（next 为空表示最新持仓区间）。
 * 成本模型：`transaction_cost_bps` 为单边成本；首期建仓只计单边成本，后续按换手率计算双边成本。
-* 换手率已考虑权重漂移后的再平衡需求；支持 Top-K 缓冲区（`buffer_exit/buffer_entry`）降低换手；停牌/缺失通过 `is_tradable` + `backtest.exit_price_policy` 近似处理（strict/ffill/delay），仍未建模涨跌停/盘口滑点等。
+* 换手率考虑权重漂移后的再平衡需求；支持 Top-K 缓冲区（`buffer_exit/buffer_entry`）降低换手；停牌/缺失通过 `is_tradable` + `backtest.exit_price_policy` 近似处理（strict/ffill/delay），仍未建模涨跌停/盘口滑点等。
 * `exit_mode=label_horizon` 不支持与再平衡频率重叠（若持有期 > 再平衡间隔会直接跳过/报错）；需保持间隔≈持有期，或改用 `exit_mode=rebalance`。
 
 ## 注意事项
