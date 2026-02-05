@@ -9,12 +9,15 @@
 * 动态股票池（PIT by-date）与最小截面规模
   * 支持 `universe.mode`（静态/文件/按日期），并可要求 by-date 文件必须覆盖（`require_by_date`）。
   * 会按 `min_symbols_per_date` 把截面太小的交易日整天丢掉，并记录 dropped_dates（还会落盘 dropped_dates.csv）。
+  * `min_symbols_per_date` 会自动下限到 `n_quantiles`（避免分组数大于当日股票数）。
+  * dropped_dates 口径是“用于建模/评估的样本”；若启用 `sample_on_rebalance_dates`，会先抽样再做 date-count 过滤。
 * 上市天数过滤（min_listed_days）
   * 通过 `list_date` 计算 `listed_days = (trade_date - list_date).days`，再按 `MIN_LISTED_DAYS` 过滤。
 * ST 过滤（drop_st）
-  * 仅 CN 市场启用：基于 `basic_df["name"]` 是否包含 “ST”（大小写不敏感）得到 `st_codes`，再把这些代码剔除。
+  * ST 概念是 CN 特有；代码不强制限制 market，仅提示 CN-specific。其他市场通常不会命中（除非股票名里刚好含 ST）。
+  * 基于 `basic_df["name"]` 是否包含 “ST”（大小写不敏感）得到 `st_codes`，再把这些代码剔除。
 * 停牌/不可交易处理（drop_suspended + suspended_policy）
-  * 先定义 `is_tradable = (vol > 0) & (amount > 0)`。
+  * 先定义 `is_tradable = (vol > 0) & (amount > 0)`；若无 `amount` 字段则退化为仅 `vol > 0`。
   * `suspended_policy: "mark"`：不删除，只是保留 `is_tradable` 标记列（给回测/信号用）。
   * `suspended_policy: "filter"`：把 `is_tradable=False` 的行直接删掉。
   * 另一个硬开关 `drop_suspended` 也会触发过滤逻辑（本质就是“删掉停牌行”）。
@@ -26,7 +29,7 @@
 ### 2) 拉数据
 
 * provider 选择（tushare / rqdata / eodhd）
-  * 市场到默认 provider 的映射、以及 provider 名称合法性检查都在 `normalize_market` 做。
+  * provider 名称规范化/别名映射在 `resolve_provider` 做，市场字符串规范在 `normalize_market` 做。
 * HK 代码内部标准格式
   * 内部标准是 5 位补零 + `.HK`，例如 `1.HK / 0001.HK / 00001.XHKG` 都会被规范成 `00001.HK`。
 * RQData 代码转换（HK）
@@ -45,6 +48,7 @@
   * 合并后会按 `ts_code` 做 `ffill`（可配 `ffill_limit`）。
   * `log_market_cap: true` 时，会把 `market_cap_col` 做 `np.log` 生成 `log_market_cap_col`（默认 `log_mcap`）。
   * fundamentals 开了但没拿到数据：`required=true` 会直接报错；否则只是警告然后继续跑。
+  * `source=provider` 目前仅支持 Tushare；其他 provider 会被禁用并给出警告（`required=true` 时直接报错）。
 
 ### 3) 打标签（label）
 
@@ -54,17 +58,18 @@
 * `next_rebalance` 的真实逻辑：
 
   * 先算 rebalance dates，再把每个交易日映射到下一个 rebalance 日。
-  * 用“下一个 rebalance 日的 close”（考虑 shift）当 `exit_price`，然后 `future_return = exit_price / close - 1`。
+  * 用“下一个 rebalance 日对应的（已 shift 的）price”当 `exit_price`；`entry_price` 也按 shift 后的 price 计算。
+  * `future_return = exit_price / entry_price - 1`。
 
 ### 4) 做特征（features）
 
 当前实现的特征（就是配置 `features.list` ）：
 
 * `sma_{w}`：对 `close` 做 SMA（窗口来自 `sma_windows`）。
-* `sma_{w}_diff`：用 SMA 做相对差（实现里是 `sma_w / sma_ref - 1`）。
+* `sma_{w}_diff`：对 SMA 做 `pct_change`（即 SMA 的日度变化率）。
 * `rsi_{n}`：RSI（`rsi` 参数默认 14）。
 * `macd_hist`：MACD histogram（参数来自 `macd: [fast, slow, signal]`）。
-* `volume_sma{w}_ratio`：`vol / SMA(vol,w) - 1`（默认 w=5）。
+* `volume_sma{w}_ratio`：`vol / SMA(vol,w)`（默认 w=5）。
 * 以及原始 `vol`（成交量列本身）。
 
 参数入口：`sma_windows / rsi / macd / volume_sma_windows`。
@@ -73,9 +78,9 @@
 
 * `none`
 * `zscore`：按日截面减均值除标准差（std=0 会处理成 NaN 后再填 0）。
-* `winsorize`：按日截面用分位数裁剪（`winsorize_pct`）。
 * `rank`：按截面做分位排名（pct rank - 0.5）。
-  并且 method 合法性校验写在 parser 里。
+* `winsorize_pct` 是可选预处理（在 `zscore/rank` 前按分位数裁剪）。
+  并且 method 合法性校验写在 pipeline 配置解析里。
 
 ### 5) 训练模型（XGBoost 回归）
 
@@ -101,8 +106,8 @@ XGBRegressor(params)模型参数包括：
 ### 6) 评估
 
 * n_splits、分位数分组、IC/IR。
-  * `cv.n_splits` 控制时间序列 CV 的折数（默认 5）。
-  * `evaluation.quantiles` 控制分位数分组数（默认 5）。
+  * `eval.n_splits` 控制时间序列 CV 的折数（默认 5）。
+  * `eval.n_quantiles` 控制分位数分组数（默认 5）。
   * 输出 IC/IR 到 `ic_<oos/live>.csv`，分位数收益到 `quantile_returns.csv`。
 * permutation test（打乱标签检验是不是靠运气）。
 * walk-forward（滚动窗口验证，还可以连带回测）。
@@ -169,6 +174,7 @@ XGBRegressor(params)模型参数包括：
 
 6. 可复现和可操作性是工程难点，不是模型难点
    run 目录、summary/config.used、positions 输出、`holdings/snapshot` 读最新结果。
+   数据回补/修订会导致同配置不同结果，复现依赖 cache + config.used + 代码版本固定。
 
 7. 网格搜索是批量实验
    你的 grid 会为每个组合写临时 config，然后直接 `pipeline.run()`，再去磁盘找 `summary.json` 抄一行进 CSV。
