@@ -109,7 +109,6 @@ data:
 
 * 作用：做 Top-K × 交易成本(bps) 的敏感性网格，逐个组合跑 pipeline，然后把关键指标汇总到一个 CSV。
 * 常用参数（脚本侧定义的）：`--top-k`（可多次传、逗号分隔）、`--cost-bps`、`--output`（默认 `out/runs/grid_summary.csv`）、`--run-name-prefix`、`--log-level`。
-* 额外入口：也能用 `csxgb-grid` 直接跑，功能等效。
 
 ### 3) `csxgb holdings`
 
