@@ -38,6 +38,11 @@ from .metrics import (
     quantile_returns,
     estimate_turnover,
     summarize_active_returns,
+    regression_error_metrics,
+    hit_rate,
+    topk_positive_ratio,
+    assign_daily_quantile_bucket,
+    bucket_ic_summary,
 )
 from .transform import apply_cross_sectional_transform
 from .split import build_sample_weight, time_series_cv_ic
@@ -206,6 +211,136 @@ def build_walk_forward_windows(
             }
         )
     return windows
+
+
+def _normalize_window_months(value: object | None, default: list[int]) -> list[int]:
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return [int(value)]
+    if isinstance(value, (list, tuple, set)):
+        items = []
+        for entry in value:
+            if entry is None:
+                continue
+            try:
+                num = int(entry)
+            except (TypeError, ValueError):
+                continue
+            if num > 0:
+                items.append(num)
+        return sorted(set(items))
+    return default
+
+
+def _estimate_obs_per_year(series: pd.Series) -> float:
+    if series is None or series.empty:
+        return np.nan
+    if not isinstance(series.index, pd.DatetimeIndex):
+        return np.nan
+    start = series.index.min()
+    end = series.index.max()
+    if start is pd.NaT or end is pd.NaT:
+        return np.nan
+    days = float((end - start).days)
+    if days <= 0:
+        return np.nan
+    return float(series.shape[0] / (days / 365.25))
+
+
+def _latest_rolling_stats(frame: pd.DataFrame, columns: list[str]) -> dict[str, float] | None:
+    if frame is None or frame.empty:
+        return None
+    valid = frame.dropna(subset=columns, how="any")
+    if valid.empty:
+        return None
+    last = valid.iloc[-1]
+    return {col: float(last[col]) for col in columns}
+
+
+def _compute_rolling_ic(
+    ic_series: pd.Series, window_months: list[int]
+) -> tuple[dict[str, pd.DataFrame], float]:
+    results: dict[str, pd.DataFrame] = {}
+    if ic_series is None or ic_series.empty:
+        return results, np.nan
+    obs_per_year = _estimate_obs_per_year(ic_series)
+    if not np.isfinite(obs_per_year) or obs_per_year <= 0:
+        return results, np.nan
+    for months in window_months:
+        window_obs = int(round(obs_per_year * months / 12))
+        if window_obs < 2:
+            continue
+        rolling = ic_series.rolling(window_obs, min_periods=window_obs)
+        mean = rolling.mean()
+        std = rolling.std(ddof=0)
+        ir = mean / std
+        frame = pd.DataFrame({"ic_mean": mean, "ic_std": std, "ic_ir": ir})
+        results[f"{months}m"] = frame
+    return results, float(obs_per_year)
+
+
+def _compute_rolling_sharpe(
+    returns: pd.Series, window_months: list[int], periods_per_year: float
+) -> dict[str, pd.DataFrame]:
+    results: dict[str, pd.DataFrame] = {}
+    if returns is None or returns.empty:
+        return results
+    if not np.isfinite(periods_per_year) or periods_per_year <= 0:
+        return results
+    for months in window_months:
+        window_obs = int(round(periods_per_year * months / 12))
+        if window_obs < 2:
+            continue
+        rolling = returns.rolling(window_obs, min_periods=window_obs)
+        mean = rolling.mean()
+        std = rolling.std(ddof=1)
+        sharpe = mean / std * np.sqrt(periods_per_year)
+        frame = pd.DataFrame({"mean": mean, "std": std, "sharpe": sharpe})
+        results[f"{months}m"] = frame
+    return results
+
+
+def _normalize_bucket_schemes(raw_schemes: object | None) -> list[dict]:
+    schemes: list[dict] = []
+    if raw_schemes is None:
+        return schemes
+    if isinstance(raw_schemes, dict):
+        raw_items = raw_schemes.get("schemes") or []
+    else:
+        raw_items = raw_schemes
+    if isinstance(raw_items, (str, int, float)):
+        raw_items = [raw_items]
+    if not isinstance(raw_items, (list, tuple)):
+        return schemes
+    for item in raw_items:
+        if isinstance(item, str):
+            col = item.strip()
+            if not col:
+                continue
+            schemes.append({"name": col, "column": col, "type": "category", "n_bins": 0})
+            continue
+        if not isinstance(item, dict):
+            continue
+        col = item.get("column") or item.get("col")
+        if not col:
+            continue
+        name = item.get("name") or col
+        bucket_type = str(item.get("type", "category")).strip().lower()
+        n_bins = item.get("n_bins", item.get("bins", 3))
+        try:
+            n_bins = int(n_bins) if n_bins is not None else 0
+        except (TypeError, ValueError):
+            n_bins = 0
+        schemes.append(
+            {
+                "name": str(name),
+                "column": str(col),
+                "type": bucket_type,
+                "n_bins": n_bins,
+            }
+        )
+    return schemes
 
 # -----------------------------------------------------------------------------
 # 1. Config
@@ -655,6 +790,34 @@ def run(config_ref: str | Path | None = None) -> None:
     EFFECTIVE_GAP_STEPS = None
     REPORT_TRAIN_IC = bool(eval_cfg.get("report_train_ic", True))
     SAMPLE_ON_REBALANCE_DATES = bool(eval_cfg.get("sample_on_rebalance_dates", False))
+    rolling_cfg = eval_cfg.get("rolling") if isinstance(eval_cfg, dict) else None
+    if isinstance(rolling_cfg, dict):
+        rolling_enabled = bool(rolling_cfg.get("enabled", True))
+        if rolling_enabled:
+            ROLLING_WINDOWS_MONTHS = _normalize_window_months(
+                rolling_cfg.get("windows_months"), [6, 12]
+            )
+        else:
+            ROLLING_WINDOWS_MONTHS = []
+    else:
+        ROLLING_WINDOWS_MONTHS = _normalize_window_months(rolling_cfg, [6, 12])
+
+    bucket_ic_cfg = eval_cfg.get("bucket_ic") if isinstance(eval_cfg, dict) else None
+    BUCKET_IC_ENABLED = False
+    BUCKET_IC_METHOD = "spearman"
+    BUCKET_IC_MIN_COUNT = 0
+    BUCKET_IC_SCHEMES = []
+    if isinstance(bucket_ic_cfg, dict):
+        BUCKET_IC_ENABLED = bool(bucket_ic_cfg.get("enabled", False))
+        BUCKET_IC_METHOD = str(bucket_ic_cfg.get("method", "spearman")).strip().lower()
+        BUCKET_IC_MIN_COUNT = int(bucket_ic_cfg.get("min_count", 0) or 0)
+        BUCKET_IC_SCHEMES = _normalize_bucket_schemes(bucket_ic_cfg.get("schemes"))
+    elif bucket_ic_cfg is not None:
+        BUCKET_IC_ENABLED = bool(bucket_ic_cfg)
+    if BUCKET_IC_METHOD not in {"spearman", "pearson"}:
+        sys.exit("eval.bucket_ic.method must be one of: spearman, pearson.")
+    if BUCKET_IC_ENABLED and not BUCKET_IC_SCHEMES:
+        logger.warning("eval.bucket_ic.enabled=true but no schemes configured.")
     perm_cfg = eval_cfg.get("permutation_test") or {}
     if isinstance(perm_cfg, dict):
         PERM_TEST_ENABLED = bool(perm_cfg.get("enabled", False))
@@ -1168,6 +1331,17 @@ def run(config_ref: str | Path | None = None) -> None:
 
     # Keep only the necessary columns; drop NaNs in features for live snapshot support
     meta_cols = ["is_tradable"] if "is_tradable" in df.columns else []
+    eval_extra_df = None
+    bucket_cols = []
+    if BUCKET_IC_ENABLED and BUCKET_IC_SCHEMES:
+        bucket_cols = list(dict.fromkeys([scheme["column"] for scheme in BUCKET_IC_SCHEMES]))
+        missing_bucket_cols = [col for col in bucket_cols if col not in df.columns]
+        if missing_bucket_cols:
+            logger.warning("Bucket IC columns missing in data: %s", missing_bucket_cols)
+        bucket_cols = [col for col in bucket_cols if col in df.columns]
+        if bucket_cols:
+            eval_extra_df = df[["trade_date", "ts_code"] + bucket_cols].copy()
+
     cols = ["trade_date", "ts_code", PRICE_COL] + FEATURES + meta_cols + [TARGET]
     cols = list(dict.fromkeys(cols))
     df = df[cols].copy()
@@ -1208,6 +1382,9 @@ def run(config_ref: str | Path | None = None) -> None:
     dataset = build_dataset(df_features, dataset_schema)
     df_features = dataset.frame
     df_full = df_features.dropna().reset_index(drop=True)
+    if eval_extra_df is not None and not eval_extra_df.empty:
+        eval_extra_df = eval_extra_df.drop_duplicates(subset=["trade_date", "ts_code"])
+        df_full = df_full.merge(eval_extra_df, on=["trade_date", "ts_code"], how="left")
     all_dates_full = np.array(sorted(df_full["trade_date"].unique()))
     rebalance_dates_all = None
     if SAMPLE_ON_REBALANCE_DATES:
@@ -1491,6 +1668,11 @@ def run(config_ref: str | Path | None = None) -> None:
             signal_col_w = "signal"
 
         ic_stats_w = summarize_ic(daily_ic_series(test_eval, TARGET, signal_col_w))
+        pearson_ic_stats_w = summarize_ic(
+            daily_ic_series(test_eval, TARGET, signal_col_w, method="pearson")
+        )
+        error_metrics_w = regression_error_metrics(test_eval[TARGET], test_eval[signal_col_w])
+        hit_rate_w = hit_rate(test_eval[TARGET], test_eval[signal_col_w])
 
         perm_stats_w = None
         if WF_PERM_TEST_ENABLED:
@@ -1538,6 +1720,8 @@ def run(config_ref: str | Path | None = None) -> None:
         turnover_mean_w = (
             float(turnover_series_w.mean()) if not turnover_series_w.empty else None
         )
+
+        topk_positive_w = topk_positive_ratio(eval_df_w, signal_col_w, TARGET, k_w)
 
         bt_stats_w = None
         bt_benchmark_stats_w = None
@@ -1608,6 +1792,10 @@ def run(config_ref: str | Path | None = None) -> None:
                 "train_ic": train_ic_stats if REPORT_TRAIN_IC else None,
                 "train_ic_raw": train_ic_raw_stats,
                 "test_ic": ic_stats_w,
+                "test_pearson_ic": pearson_ic_stats_w,
+                "error_metrics": error_metrics_w,
+                "hit_rate": hit_rate_w,
+                "topk_positive_ratio": topk_positive_w,
                 "long_short": long_short_w,
                 "turnover_mean": turnover_mean_w,
                 "backtest": {
@@ -1708,6 +1896,8 @@ def run(config_ref: str | Path | None = None) -> None:
 
     train_ic_series = pd.Series(dtype=float, name="ic")
     train_ic_stats = {}
+    train_pearson_ic_series = pd.Series(dtype=float, name="ic_pearson")
+    train_pearson_ic_stats = {}
     if REPORT_TRAIN_IC:
         train_ic_series = daily_ic_series(train_eval_df, TARGET, train_signal_col)
         train_ic_stats = summarize_ic(train_ic_series)
@@ -1719,6 +1909,19 @@ def run(config_ref: str | Path | None = None) -> None:
             train_ic_stats["t_stat"],
             train_ic_stats["p_value"],
             train_ic_stats["n"],
+        )
+        train_pearson_ic_series = daily_ic_series(
+            train_eval_df, TARGET, train_signal_col, method="pearson"
+        )
+        train_pearson_ic_stats = summarize_ic(train_pearson_ic_series)
+        logger.info(
+            "Train Daily Pearson IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
+            train_pearson_ic_stats["mean"],
+            train_pearson_ic_stats["std"],
+            train_pearson_ic_stats["ir"],
+            train_pearson_ic_stats["t_stat"],
+            train_pearson_ic_stats["p_value"],
+            train_pearson_ic_stats["n"],
         )
 
     positions_by_rebalance_live = None
@@ -1817,6 +2020,12 @@ def run(config_ref: str | Path | None = None) -> None:
         result = {
             "ic_series": default_series,
             "ic_stats": {},
+            "pearson_ic_series": default_series,
+            "pearson_ic_stats": {},
+            "error_metrics": {},
+            "hit_rate": {},
+            "topk_positive_ratio": {},
+            "bucket_ic": [],
             "quantile_ts": default_frame,
             "quantile_mean": default_series,
             "turnover_series": default_series,
@@ -1864,6 +2073,43 @@ def run(config_ref: str | Path | None = None) -> None:
         )
         result["ic_series"] = ic_series
         result["ic_stats"] = ic_stats
+
+        pearson_ic_series = daily_ic_series(test_eval_df, TARGET, signal_col, method="pearson")
+        pearson_ic_stats = summarize_ic(pearson_ic_series)
+        logger.info(
+            "%sDaily Pearson IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
+            label_prefix,
+            pearson_ic_stats["mean"],
+            pearson_ic_stats["std"],
+            pearson_ic_stats["ir"],
+            pearson_ic_stats["t_stat"],
+            pearson_ic_stats["p_value"],
+            pearson_ic_stats["n"],
+        )
+        result["pearson_ic_series"] = pearson_ic_series
+        result["pearson_ic_stats"] = pearson_ic_stats
+
+        error_metrics = regression_error_metrics(test_eval_df[TARGET], test_eval_df[signal_col])
+        result["error_metrics"] = error_metrics
+        if error_metrics and error_metrics.get("n", 0) > 0:
+            logger.info(
+                "%sError metrics: MAE=%.6f, RMSE=%.6f, R2=%.4f (n=%s)",
+                label_prefix,
+                error_metrics.get("mae", np.nan),
+                error_metrics.get("rmse", np.nan),
+                error_metrics.get("r2", np.nan),
+                error_metrics.get("n", 0),
+            )
+
+        hit_stats = hit_rate(test_eval_df[TARGET], test_eval_df[signal_col])
+        result["hit_rate"] = hit_stats
+        if hit_stats and hit_stats.get("n", 0) > 0:
+            logger.info(
+                "%sHit rate: %.2f%% (n=%s)",
+                label_prefix,
+                hit_stats.get("hit_rate", np.nan) * 100,
+                hit_stats.get("n", 0),
+            )
 
         if run_perm_test:
             if perm_train_df is None or perm_test_df is None:
@@ -1958,6 +2204,55 @@ def run(config_ref: str | Path | None = None) -> None:
                 cost_drag * 100,
                 TRANSACTION_COST_BPS,
             )
+
+        topk_stats = topk_positive_ratio(eval_df, signal_col, TARGET, k)
+        result["topk_positive_ratio"] = topk_stats
+        if topk_stats and topk_stats.get("n_dates", 0) > 0:
+            logger.info(
+                "%sTop-%s positive ratio: %.2f%% (n=%s)",
+                label_prefix,
+                k,
+                topk_stats.get("topk_positive_ratio", np.nan) * 100,
+                topk_stats.get("n_dates", 0),
+            )
+
+        if BUCKET_IC_ENABLED and BUCKET_IC_SCHEMES:
+            bucket_frames = []
+            for scheme in BUCKET_IC_SCHEMES:
+                col = scheme["column"]
+                if col not in test_eval_df.columns:
+                    continue
+                bucket_type = str(scheme.get("type", "category")).strip().lower()
+                if bucket_type not in {"category", "quantile"}:
+                    bucket_type = "category"
+                data_for_bucket = test_eval_df.copy()
+                bucket_col = col
+                if bucket_type == "quantile":
+                    n_bins = int(scheme.get("n_bins") or 0)
+                    if n_bins < 2:
+                        continue
+                    bucket_col = f"bucket_{scheme['name']}"
+                    data_for_bucket[bucket_col] = assign_daily_quantile_bucket(
+                        data_for_bucket, col, n_bins
+                    )
+                summary_df = bucket_ic_summary(
+                    data_for_bucket,
+                    TARGET,
+                    signal_col,
+                    bucket_col,
+                    method=BUCKET_IC_METHOD,
+                    min_count=BUCKET_IC_MIN_COUNT,
+                )
+                if not summary_df.empty:
+                    summary_df.insert(0, "scheme", scheme["name"])
+                    summary_df.insert(1, "type", bucket_type)
+                    if bucket_type == "quantile":
+                        summary_df.insert(2, "n_bins", int(scheme.get("n_bins") or 0))
+                    summary_df["method"] = BUCKET_IC_METHOD
+                    bucket_frames.append(summary_df)
+            if bucket_frames:
+                bucket_df = pd.concat(bucket_frames, ignore_index=True)
+                result["bucket_ic"] = bucket_df.to_dict(orient="records")
 
         bt_rebalance = get_rebalance_dates(
             sorted(eval_df_full["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY
@@ -2113,6 +2408,12 @@ def run(config_ref: str | Path | None = None) -> None:
 
     ic_series = eval_main["ic_series"]
     ic_stats = eval_main["ic_stats"]
+    pearson_ic_series = eval_main["pearson_ic_series"]
+    pearson_ic_stats = eval_main["pearson_ic_stats"]
+    error_metrics = eval_main["error_metrics"]
+    hit_rate_stats = eval_main["hit_rate"]
+    topk_positive_stats = eval_main["topk_positive_ratio"]
+    bucket_ic_records = eval_main["bucket_ic"]
     quantile_ts = eval_main["quantile_ts"]
     quantile_mean = eval_main["quantile_mean"]
     turnover_series = eval_main["turnover_series"]
@@ -2127,6 +2428,25 @@ def run(config_ref: str | Path | None = None) -> None:
     bt_active_stats = eval_main["bt_active_stats"]
     bt_periods = eval_main["bt_periods"]
     perm_stats = eval_main["perm_stats"]
+
+    rolling_ic_results, rolling_ic_obs_per_year = _compute_rolling_ic(
+        ic_series, ROLLING_WINDOWS_MONTHS
+    )
+    rolling_ic_latest = {
+        label: _latest_rolling_stats(frame, ["ic_mean", "ic_ir"])
+        for label, frame in rolling_ic_results.items()
+    }
+    rolling_sharpe_results = {}
+    rolling_sharpe_latest = {}
+    if bt_stats is not None and not bt_net_series.empty:
+        periods_per_year = bt_stats.get("periods_per_year", np.nan)
+        rolling_sharpe_results = _compute_rolling_sharpe(
+            bt_net_series, ROLLING_WINDOWS_MONTHS, periods_per_year
+        )
+        rolling_sharpe_latest = {
+            label: _latest_rolling_stats(frame, ["mean", "std", "sharpe"])
+            for label, frame in rolling_sharpe_results.items()
+        }
 
     if positions_by_rebalance is not None and not positions_by_rebalance.empty:
         positions_by_rebalance = _annotate_positions_window(positions_by_rebalance)
@@ -2179,6 +2499,12 @@ def run(config_ref: str | Path | None = None) -> None:
     final_oos_eval = None
     ic_series_oos = pd.Series(dtype=float, name="ic")
     ic_stats_oos = {}
+    pearson_ic_series_oos = pd.Series(dtype=float, name="ic_pearson")
+    pearson_ic_stats_oos = {}
+    error_metrics_oos = {}
+    hit_rate_stats_oos = {}
+    topk_positive_stats_oos = {}
+    bucket_ic_records_oos = []
     quantile_ts_oos = pd.DataFrame()
     quantile_mean_oos = pd.Series(dtype=float)
     turnover_series_oos = pd.Series(dtype=float, name="turnover")
@@ -2192,6 +2518,11 @@ def run(config_ref: str | Path | None = None) -> None:
     bt_benchmark_stats_oos = None
     bt_active_stats_oos = None
     bt_periods_oos: list[dict] = []
+    rolling_ic_oos_results: dict[str, pd.DataFrame] = {}
+    rolling_ic_oos_obs_per_year = np.nan
+    rolling_ic_latest_oos: dict[str, dict | None] = {}
+    rolling_sharpe_oos_results: dict[str, pd.DataFrame] = {}
+    rolling_sharpe_latest_oos: dict[str, dict | None] = {}
     positions_by_rebalance_oos_path: Optional[Path] = None
     positions_current_oos_path: Optional[Path] = None
     positions_diff_oos_path: Optional[Path] = None
@@ -2227,6 +2558,12 @@ def run(config_ref: str | Path | None = None) -> None:
             )
             ic_series_oos = final_oos_eval["ic_series"]
             ic_stats_oos = final_oos_eval["ic_stats"]
+            pearson_ic_series_oos = final_oos_eval["pearson_ic_series"]
+            pearson_ic_stats_oos = final_oos_eval["pearson_ic_stats"]
+            error_metrics_oos = final_oos_eval["error_metrics"]
+            hit_rate_stats_oos = final_oos_eval["hit_rate"]
+            topk_positive_stats_oos = final_oos_eval["topk_positive_ratio"]
+            bucket_ic_records_oos = final_oos_eval["bucket_ic"]
             quantile_ts_oos = final_oos_eval["quantile_ts"]
             quantile_mean_oos = final_oos_eval["quantile_mean"]
             turnover_series_oos = final_oos_eval["turnover_series"]
@@ -2243,6 +2580,24 @@ def run(config_ref: str | Path | None = None) -> None:
             if positions_by_rebalance_oos is not None and not positions_by_rebalance_oos.empty:
                 positions_by_rebalance_oos = _annotate_positions_window(positions_by_rebalance_oos)
 
+    if final_oos_eval is not None:
+        rolling_ic_oos_results, rolling_ic_oos_obs_per_year = _compute_rolling_ic(
+            ic_series_oos, ROLLING_WINDOWS_MONTHS
+        )
+        rolling_ic_latest_oos = {
+            label: _latest_rolling_stats(frame, ["ic_mean", "ic_ir"])
+            for label, frame in rolling_ic_oos_results.items()
+        }
+        if bt_stats_oos is not None and not bt_net_series_oos.empty:
+            periods_per_year_oos = bt_stats_oos.get("periods_per_year", np.nan)
+            rolling_sharpe_oos_results = _compute_rolling_sharpe(
+                bt_net_series_oos, ROLLING_WINDOWS_MONTHS, periods_per_year_oos
+            )
+            rolling_sharpe_latest_oos = {
+                label: _latest_rolling_stats(frame, ["mean", "std", "sharpe"])
+                for label, frame in rolling_sharpe_oos_results.items()
+            }
+
     # Feature importance
     logger.info("Feature importance:")
     importance_df = pd.DataFrame(
@@ -2254,19 +2609,51 @@ def run(config_ref: str | Path | None = None) -> None:
     # Persist artifacts
     dataset_path: Optional[Path] = None
     if SAVE_ARTIFACTS:
+        rolling_ic_files: dict[str, str] = {}
+        rolling_sharpe_files: dict[str, str] = {}
+        rolling_ic_oos_files: dict[str, str] = {}
+        rolling_sharpe_oos_files: dict[str, str] = {}
+        bucket_ic_path: Optional[Path] = None
+        bucket_ic_oos_path: Optional[Path] = None
         if SAVE_DATASET:
             dataset_path = run_dir / "dataset.parquet"
             save_parquet(dataset.as_multiindex(), dataset_path)
         save_frame(importance_df, run_dir / "feature_importance.csv")
         save_series(ic_series, run_dir / "ic_test.csv", value_name="ic")
+        save_series(pearson_ic_series, run_dir / "ic_pearson_test.csv", value_name="ic")
         if REPORT_TRAIN_IC:
             save_series(train_ic_series, run_dir / "ic_train.csv", value_name="ic")
+            save_series(train_pearson_ic_series, run_dir / "ic_pearson_train.csv", value_name="ic")
         if not quantile_ts.empty:
             quantile_out = quantile_ts.reset_index()
             save_frame(quantile_out, run_dir / "quantile_returns.csv")
         save_series(turnover_series, run_dir / "turnover_eval.csv", value_name="turnover")
+        if bucket_ic_records:
+            bucket_ic_path = run_dir / "bucket_ic.csv"
+            save_frame(pd.DataFrame(bucket_ic_records), bucket_ic_path)
+        if rolling_ic_results:
+            for label, frame in rolling_ic_results.items():
+                if frame.empty:
+                    continue
+                out = frame.copy()
+                out.index.name = "trade_date"
+                path = run_dir / f"ic_rolling_{label}.csv"
+                save_frame(out.reset_index(), path)
+                rolling_ic_files[label] = str(path)
+        if rolling_sharpe_results:
+            for label, frame in rolling_sharpe_results.items():
+                if frame.empty:
+                    continue
+                out = frame.copy()
+                out.index.name = "trade_date"
+                path = run_dir / f"backtest_rolling_sharpe_{label}.csv"
+                save_frame(out.reset_index(), path)
+                rolling_sharpe_files[label] = str(path)
         if final_oos_eval is not None:
             save_series(ic_series_oos, run_dir / "ic_oos.csv", value_name="ic")
+            save_series(
+                pearson_ic_series_oos, run_dir / "ic_pearson_oos.csv", value_name="ic"
+            )
             if not quantile_ts_oos.empty:
                 quantile_oos_out = quantile_ts_oos.reset_index()
                 save_frame(quantile_oos_out, run_dir / "quantile_returns_oos.csv")
@@ -2275,6 +2662,27 @@ def run(config_ref: str | Path | None = None) -> None:
                 run_dir / "turnover_eval_oos.csv",
                 value_name="turnover",
             )
+            if bucket_ic_records_oos:
+                bucket_ic_oos_path = run_dir / "bucket_ic_oos.csv"
+                save_frame(pd.DataFrame(bucket_ic_records_oos), bucket_ic_oos_path)
+            if rolling_ic_oos_results:
+                for label, frame in rolling_ic_oos_results.items():
+                    if frame.empty:
+                        continue
+                    out = frame.copy()
+                    out.index.name = "trade_date"
+                    path = run_dir / f"ic_rolling_{label}_oos.csv"
+                    save_frame(out.reset_index(), path)
+                    rolling_ic_oos_files[label] = str(path)
+            if rolling_sharpe_oos_results:
+                for label, frame in rolling_sharpe_oos_results.items():
+                    if frame.empty:
+                        continue
+                    out = frame.copy()
+                    out.index.name = "trade_date"
+                    path = run_dir / f"backtest_rolling_sharpe_{label}_oos.csv"
+                    save_frame(out.reset_index(), path)
+                    rolling_sharpe_oos_files[label] = str(path)
         if not dropped_date_counts.empty:
             dropped_df = dropped_date_counts.rename("symbol_count").reset_index()
             save_frame(dropped_df, run_dir / "dropped_dates.csv")
@@ -2459,12 +2867,25 @@ def run(config_ref: str | Path | None = None) -> None:
             },
             "eval": {
                 "ic": ic_stats,
+                "pearson_ic": pearson_ic_stats,
                 "train_ic": train_ic_stats if REPORT_TRAIN_IC else None,
                 "train_ic_raw": train_ic_raw_stats if train_ic_raw_stats else None,
+                "train_pearson_ic": train_pearson_ic_stats if REPORT_TRAIN_IC else None,
                 "cv_ic": cv_stats,
                 "cv_ic_raw": cv_stats_raw,
                 "signal_direction": SIGNAL_DIRECTION,
                 "signal_direction_mode": SIGNAL_DIRECTION_MODE,
+                "error_metrics": error_metrics,
+                "hit_rate": hit_rate_stats,
+                "topk_positive_ratio": topk_positive_stats,
+                "bucket_ic": bucket_ic_records,
+                "bucket_ic_file": str(bucket_ic_path) if bucket_ic_path else None,
+                "rolling_ic": {
+                    "windows_months": ROLLING_WINDOWS_MONTHS,
+                    "obs_per_year": rolling_ic_obs_per_year,
+                    "latest": rolling_ic_latest,
+                    "series_files": rolling_ic_files,
+                },
                 "quantile_mean": quantile_mean.to_dict() if not quantile_mean.empty else {},
                 "long_short": float(quantile_mean.iloc[-1] - quantile_mean.iloc[0])
                 if not quantile_mean.empty
@@ -2494,6 +2915,11 @@ def run(config_ref: str | Path | None = None) -> None:
                 "stats": bt_stats,
                 "benchmark": bt_benchmark_stats,
                 "active": bt_active_stats,
+                "rolling_sharpe": {
+                    "windows_months": ROLLING_WINDOWS_MONTHS,
+                    "latest": rolling_sharpe_latest,
+                    "series_files": rolling_sharpe_files,
+                },
             },
             "final_oos": {
                 "enabled": FINAL_OOS_ENABLED,
@@ -2502,6 +2928,20 @@ def run(config_ref: str | Path | None = None) -> None:
                 "start": final_oos_start.strftime("%Y%m%d") if final_oos_start else None,
                 "end": final_oos_end.strftime("%Y%m%d") if final_oos_end else None,
                 "ic": ic_stats_oos if final_oos_eval is not None else None,
+                "pearson_ic": pearson_ic_stats_oos if final_oos_eval is not None else None,
+                "error_metrics": error_metrics_oos if final_oos_eval is not None else None,
+                "hit_rate": hit_rate_stats_oos if final_oos_eval is not None else None,
+                "topk_positive_ratio": topk_positive_stats_oos if final_oos_eval is not None else None,
+                "bucket_ic": bucket_ic_records_oos if final_oos_eval is not None else None,
+                "bucket_ic_file": str(bucket_ic_oos_path) if bucket_ic_oos_path else None,
+                "rolling_ic": {
+                    "windows_months": ROLLING_WINDOWS_MONTHS,
+                    "obs_per_year": rolling_ic_oos_obs_per_year,
+                    "latest": rolling_ic_latest_oos,
+                    "series_files": rolling_ic_oos_files,
+                }
+                if final_oos_eval is not None
+                else None,
                 "quantile_mean": quantile_mean_oos.to_dict()
                 if final_oos_eval is not None and not quantile_mean_oos.empty
                 else {},
@@ -2518,6 +2958,11 @@ def run(config_ref: str | Path | None = None) -> None:
                     "stats": bt_stats_oos,
                     "benchmark": bt_benchmark_stats_oos,
                     "active": bt_active_stats_oos,
+                    "rolling_sharpe": {
+                        "windows_months": ROLLING_WINDOWS_MONTHS,
+                        "latest": rolling_sharpe_latest_oos,
+                        "series_files": rolling_sharpe_oos_files,
+                    },
                 }
                 if final_oos_eval is not None
                 else None,

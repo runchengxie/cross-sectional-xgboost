@@ -17,7 +17,7 @@ csxgb init-config --market hk --out config/
 * `label`：预测窗口、shift、winsorize（支持 `horizon_mode=next_rebalance`）
 * `features`：特征清单与窗口
 * `model`：XGBoost 参数，`sample_weight_mode`（`none`/`date_equal`）
-* `eval`：切分、分位数、换手成本、embargo/purge、`signal_direction_mode`、`min_abs_ic_to_flip`、`sample_on_rebalance_dates`，以及可选的 `report_train_ic`、`save_artifacts`、`save_dataset`、`permutation_test`、`walk_forward` 与 `final_oos`
+* `eval`：切分、分位数、换手成本、embargo/purge、`signal_direction_mode`、`min_abs_ic_to_flip`、`sample_on_rebalance_dates`，以及可选的 `report_train_ic`、`save_artifacts`、`save_dataset`、`permutation_test`、`walk_forward`、`final_oos`，还可配置 `rolling`（滚动 IC/Sharpe 窗口）与 `bucket_ic`（分桶 IC）
 * `backtest`：再平衡频率、Top-K、成本、`long_only/short_k`、基准、`exit_mode`、`exit_price_policy` 与 `buffer_exit/buffer_entry`，可选 `execution`（cost_model / exit_policy）
 * `live`：可选“当下持仓快照”，用于在固定回测之外输出当前组合
 
@@ -83,4 +83,29 @@ backtest:
     exit_policy:
       price: delay
       fallback: ffill
+```
+
+## 补充指标配置（可选）
+
+```yaml
+eval:
+  rolling:
+    enabled: true
+    windows_months: [6, 12]   # 6M/12M 滚动 IC 与 Sharpe
+  bucket_ic:
+    enabled: true
+    method: spearman          # spearman / pearson
+    min_count: 0              # 分桶样本不足时可跳过
+    schemes:
+      - name: industry
+        column: industry_code
+        type: category
+      - name: market_cap
+        column: log_mcap
+        type: quantile
+        n_bins: 3
+      - name: liquidity
+        column: amount
+        type: quantile
+        n_bins: 3
 ```

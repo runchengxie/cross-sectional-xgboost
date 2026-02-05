@@ -194,6 +194,11 @@
 * 是什么：每天截面上 `corr(pred, future_return)`（不做 rank）。
 * 解决什么：Spearman 只看排序，不敏感于“幅度是否有意义”。Pearson 能补上这一块。
 * 怎么看：如果 Spearman 很高但 Pearson 接近 0，可能只是排序有点用，但强度不稳。
+* 产物：
+  * `ic_pearson_test.csv`（测试集日度 Pearson IC 序列）
+  * `summary.json -> eval.pearson_ic`（汇总统计）
+  * 若开 `report_train_ic`：`ic_pearson_train.csv` / `summary.json -> eval.train_pearson_ic`
+  * 若有 Final OOS：`ic_pearson_oos.csv` / `summary.json -> final_oos.pearson_ic`
 
 ### B) MAE / RMSE / R²（误差指标）
 
@@ -206,10 +211,16 @@
 
 > 现实里你可能不会把它们当 KPI，但它们是非常好的错误预警。
 
+* 产物：`summary.json -> eval.error_metrics`（以及 `final_oos.error_metrics`）。
+
 ### C) 分桶 IC（稳定性拆解）
 
 * 是什么：按行业/市值/流动性分组分别算 IC。
 * 解决什么：避免某个小角落扛起全场，或者策略其实是在吃某个风格暴露。
+* 说明：通过 `eval.bucket_ic` 配置启用（可指定列名与 quantile 分桶）。
+* 产物：
+  * `bucket_ic.csv`（若启用）
+  * `summary.json -> eval.bucket_ic / eval.bucket_ic_file`
 
 ## 9.2 策略层面的补充
 
@@ -217,16 +228,23 @@
 
 * 是什么：比如 6M/12M 滚动窗口计算 IC mean/IR、Sharpe。
 * 解决什么：识别策略是不是只在某段行情有效。
+* 产物：
+  * `ic_rolling_6m.csv` / `ic_rolling_12m.csv`（按配置窗口）
+  * `backtest_rolling_sharpe_6m.csv` / `backtest_rolling_sharpe_12m.csv`
+  * `summary.json -> eval.rolling_ic` / `summary.json -> backtest.rolling_sharpe`
 
 ### E) Drawdown duration（回撤持续时间）与 recovery time（恢复时间）
 
 * 是什么：最大回撤跌了多久、从谷底爬回前高用了多久。
 * 解决什么：最大回撤只说跌多深，不说持续多久。而持续多久往往感官更痛苦。
+* 字段：`summary.json -> backtest.stats.drawdown_duration / recovery_time`（单位=回测期数），
+  以及 `_days`（若能从日期索引推算）。
 
 ### F) Sortino / Calmar（更适合交易语境的比率）
 
 * Sortino：只用下行波动算风险，适合非对称收益。
 * Calmar：年化收益 / 最大回撤，低频策略常用。
+* 字段：`summary.json -> backtest.stats.sortino / calmar`。
 
 ### G) hit rate（方向命中）/ top-K 正收益占比
 
@@ -235,6 +253,7 @@
   * hit rate：`sign(pred) == sign(real)` 的比例
   * top-K positive ratio：Top-K 里未来收益为正的占比
 * 解决什么：有些策略不追求高 IC，但追求选出来的大概率别是不良标的。
+* 字段：`summary.json -> eval.hit_rate / eval.topk_positive_ratio`。
 
 ## 9.3 风险与尾部补充
 
@@ -242,3 +261,4 @@
 
 * 是什么：看收益是否来自几次偶发的情况，或者是不是高度右偏靠极少数大赚撑起来。
 * 至少上 95% VaR + CVaR（Expected Shortfall），关注尾部风险。
+* 字段：`summary.json -> backtest.stats.skew / kurtosis / var_95 / cvar_95`。

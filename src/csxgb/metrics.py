@@ -17,12 +17,31 @@ def spearman_corr(x: pd.Series, y: pd.Series) -> float:
     return x_rank.corr(y_rank)
 
 
-def daily_ic_series(data: pd.DataFrame, target_col: str, pred_col: str) -> pd.Series:
+def pearson_corr(x: pd.Series, y: pd.Series) -> float:
+    if len(x) < 2:
+        return np.nan
+    return x.corr(y)
+
+
+def daily_ic_series(
+    data: pd.DataFrame,
+    target_col: str,
+    pred_col: str,
+    *,
+    method: str = "spearman",
+) -> pd.Series:
+    method = str(method).strip().lower()
+    if method == "spearman":
+        corr_fn = spearman_corr
+    elif method == "pearson":
+        corr_fn = pearson_corr
+    else:
+        raise ValueError("method must be one of: spearman, pearson.")
     records: list[tuple[pd.Timestamp, float]] = []
     for date, group in data.groupby("trade_date"):
         if group[target_col].nunique() < 2:
             continue
-        ic = spearman_corr(group[pred_col], group[target_col])
+        ic = corr_fn(group[pred_col], group[target_col])
         if not np.isnan(ic):
             records.append((pd.to_datetime(date), float(ic)))
     if not records:
@@ -93,6 +112,98 @@ def quantile_returns(
     q_ret = data.groupby(["trade_date", "quantile"])[target_col].mean().unstack()
     q_ret.index = pd.to_datetime(q_ret.index)
     return q_ret
+
+
+def regression_error_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:
+    aligned = pd.concat([y_true.rename("y_true"), y_pred.rename("y_pred")], axis=1).dropna()
+    if aligned.empty:
+        return {"n": 0, "mae": np.nan, "rmse": np.nan, "r2": np.nan}
+    y_true = aligned["y_true"].to_numpy()
+    y_pred = aligned["y_pred"].to_numpy()
+    err = y_true - y_pred
+    mae = float(np.mean(np.abs(err)))
+    rmse = float(np.sqrt(np.mean(err**2)))
+    denom = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    r2 = float(1 - np.sum(err**2) / denom) if denom > 0 else np.nan
+    return {"n": int(aligned.shape[0]), "mae": mae, "rmse": rmse, "r2": r2}
+
+
+def hit_rate(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:
+    aligned = pd.concat([y_true.rename("y_true"), y_pred.rename("y_pred")], axis=1).dropna()
+    if aligned.empty:
+        return {"n": 0, "hit_rate": np.nan}
+    sign_true = np.sign(aligned["y_true"].to_numpy())
+    sign_pred = np.sign(aligned["y_pred"].to_numpy())
+    hit = float(np.mean(sign_true == sign_pred)) if aligned.shape[0] > 0 else np.nan
+    return {"n": int(aligned.shape[0]), "hit_rate": hit}
+
+
+def topk_positive_ratio(
+    data: pd.DataFrame,
+    pred_col: str,
+    target_col: str,
+    k: int,
+    *,
+    date_col: str = "trade_date",
+) -> dict[str, float]:
+    if data is None or data.empty or k <= 0:
+        return {"n_dates": 0, "topk_positive_ratio": np.nan}
+    ratios = []
+    for _, group in data.groupby(date_col):
+        if len(group) < k:
+            continue
+        top = group.nlargest(k, pred_col)
+        if top.empty:
+            continue
+        ratios.append(float((top[target_col] > 0).mean()))
+    if not ratios:
+        return {"n_dates": 0, "topk_positive_ratio": np.nan}
+    return {"n_dates": int(len(ratios)), "topk_positive_ratio": float(np.mean(ratios))}
+
+
+def assign_daily_quantile_bucket(
+    data: pd.DataFrame,
+    value_col: str,
+    n_bins: int,
+    *,
+    date_col: str = "trade_date",
+) -> pd.Series:
+    def _bucket(values: pd.Series) -> pd.Series:
+        if values.nunique() < n_bins:
+            return pd.Series([np.nan] * len(values), index=values.index)
+        ranks = values.rank(method="first")
+        return pd.qcut(ranks, n_bins, labels=False, duplicates="drop")
+
+    buckets = data.groupby(date_col, sort=False)[value_col].apply(_bucket)
+    buckets = buckets.reset_index(level=0, drop=True)
+    buckets.name = f"{value_col}_bucket"
+    return buckets
+
+
+def bucket_ic_summary(
+    data: pd.DataFrame,
+    target_col: str,
+    pred_col: str,
+    bucket_col: str,
+    *,
+    method: str = "spearman",
+    min_count: int = 0,
+) -> pd.DataFrame:
+    if data is None or data.empty:
+        return pd.DataFrame()
+    subset = data.dropna(subset=[bucket_col, target_col, pred_col])
+    if subset.empty:
+        return pd.DataFrame()
+    records: list[dict[str, float | str]] = []
+    for bucket_value, group in subset.groupby(bucket_col, sort=False):
+        if min_count and group.shape[0] < min_count:
+            continue
+        ic_series = daily_ic_series(group, target_col, pred_col, method=method)
+        stats = summarize_ic(ic_series)
+        stats["bucket"] = str(bucket_value)
+        stats["bucket_col"] = str(bucket_col)
+        records.append(stats)
+    return pd.DataFrame(records)
 
 
 def estimate_turnover(
