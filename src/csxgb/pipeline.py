@@ -1565,8 +1565,10 @@ def run(config_ref: str | Path | None = None) -> None:
         n_runs: int,
         seed: Optional[int],
         signal_direction: float,
+        eval_dates: Optional[list[pd.Timestamp]] = None,
     ) -> list[float]:
         scores = []
+        eval_date_set = set(pd.to_datetime(eval_dates)) if eval_dates else None
         for idx in range(n_runs):
             run_seed = None if seed is None else seed + idx
             rng = np.random.default_rng(run_seed)
@@ -1583,10 +1585,32 @@ def run(config_ref: str | Path | None = None) -> None:
             perm_test["pred"] = perm_model.predict(perm_test[FEATURES])
             if signal_direction != 1.0:
                 perm_test["pred"] = perm_test["pred"] * signal_direction
+            if eval_date_set is not None:
+                perm_test = perm_test[perm_test["trade_date"].isin(eval_date_set)]
 
             ic_values = daily_ic_series(perm_test, TARGET, "pred")
             scores.append(float(ic_values.mean()) if not ic_values.empty else np.nan)
         return scores
+
+
+    def sample_rebalance_frame(
+        frame: pd.DataFrame,
+        *,
+        frequency: str,
+        valid_dates: Optional[set[pd.Timestamp]] = None,
+        allowed_dates: Optional[np.ndarray] = None,
+    ) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
+        if frame is None or frame.empty:
+            return pd.DataFrame(columns=frame.columns if frame is not None else []), []
+        trade_dates_sorted = sorted(frame["trade_date"].unique())
+        rebalance_dates = get_rebalance_dates(trade_dates_sorted, frequency)
+        if valid_dates:
+            rebalance_dates = [d for d in rebalance_dates if d in valid_dates]
+        if allowed_dates is not None:
+            allowed_dates_set = set(pd.to_datetime(allowed_dates))
+            rebalance_dates = [d for d in rebalance_dates if d in allowed_dates_set]
+        sampled = frame[frame["trade_date"].isin(rebalance_dates)].copy()
+        return sampled, rebalance_dates
 
 
     def evaluate_window(window_meta: dict) -> dict:
@@ -1662,17 +1686,22 @@ def run(config_ref: str | Path | None = None) -> None:
 
         test_eval = test_df_w.copy()
         test_eval["pred"] = model_w.predict(test_eval[FEATURES])
-        signal_col_w = "pred"
-        if direction != 1.0:
-            test_eval["signal"] = test_eval["pred"] * direction
-            signal_col_w = "signal"
-
-        ic_stats_w = summarize_ic(daily_ic_series(test_eval, TARGET, signal_col_w))
-        pearson_ic_stats_w = summarize_ic(
-            daily_ic_series(test_eval, TARGET, signal_col_w, method="pearson")
+        test_eval["signal_eval"] = test_eval["pred"] * direction
+        eval_allowed_dates_w = test_dates if SAMPLE_ON_REBALANCE_DATES else None
+        eval_df_w, rebalance_dates_w = sample_rebalance_frame(
+            test_eval,
+            frequency=REBALANCE_FREQUENCY,
+            valid_dates=valid_dates_set,
+            allowed_dates=eval_allowed_dates_w,
         )
-        error_metrics_w = regression_error_metrics(test_eval[TARGET], test_eval[signal_col_w])
-        hit_rate_w = hit_rate(test_eval[TARGET], test_eval[signal_col_w])
+
+        signal_col_w = "signal_eval"
+        ic_stats_w = summarize_ic(daily_ic_series(eval_df_w, TARGET, signal_col_w))
+        pearson_ic_stats_w = summarize_ic(
+            daily_ic_series(eval_df_w, TARGET, signal_col_w, method="pearson")
+        )
+        error_metrics_w = regression_error_metrics(eval_df_w[TARGET], eval_df_w[signal_col_w])
+        hit_rate_w = hit_rate(eval_df_w[TARGET], eval_df_w[signal_col_w])
 
         perm_stats_w = None
         if WF_PERM_TEST_ENABLED:
@@ -1682,6 +1711,7 @@ def run(config_ref: str | Path | None = None) -> None:
                 WF_PERM_TEST_RUNS,
                 WF_PERM_TEST_SEED,
                 direction,
+                rebalance_dates_w,
             )
             if perm_scores:
                 perm_stats_w = {
@@ -1690,15 +1720,6 @@ def run(config_ref: str | Path | None = None) -> None:
                     "scores": [float(score) for score in perm_scores],
                     "runs": int(len(perm_scores)),
                 }
-
-        trade_dates_sorted = sorted(test_eval["trade_date"].unique())
-        rebalance_dates_w = get_rebalance_dates(trade_dates_sorted, REBALANCE_FREQUENCY)
-        if valid_dates_set:
-            rebalance_dates_w = [d for d in rebalance_dates_w if d in valid_dates_set]
-        if SAMPLE_ON_REBALANCE_DATES:
-            test_dates_set = set(pd.to_datetime(test_dates))
-            rebalance_dates_w = [d for d in rebalance_dates_w if d in test_dates_set]
-        eval_df_w = test_eval[test_eval["trade_date"].isin(rebalance_dates_w)].copy()
 
         quantile_ts_w = quantile_returns(eval_df_w, signal_col_w, TARGET, N_QUANTILES)
         quantile_mean_w = quantile_ts_w.mean() if not quantile_ts_w.empty else pd.Series(dtype=float)
@@ -1709,14 +1730,17 @@ def run(config_ref: str | Path | None = None) -> None:
         )
 
         k_w = min(TOP_K, eval_df_w["ts_code"].nunique())
-        turnover_series_w = estimate_turnover(
-            eval_df_w,
-            signal_col_w,
-            k_w,
-            rebalance_dates_w,
-            buffer_exit=EVAL_BUFFER_EXIT,
-            buffer_entry=EVAL_BUFFER_ENTRY,
-        )
+        if k_w > 0 and rebalance_dates_w:
+            turnover_series_w = estimate_turnover(
+                eval_df_w,
+                signal_col_w,
+                k_w,
+                rebalance_dates_w,
+                buffer_exit=EVAL_BUFFER_EXIT,
+                buffer_entry=EVAL_BUFFER_ENTRY,
+            )
+        else:
+            turnover_series_w = pd.Series(dtype=float, name="turnover")
         turnover_mean_w = (
             float(turnover_series_w.mean()) if not turnover_series_w.empty else None
         )
@@ -2040,6 +2064,9 @@ def run(config_ref: str | Path | None = None) -> None:
             "bt_active_stats": None,
             "bt_periods": [],
             "perm_stats": None,
+            "scored_data": default_frame,
+            "eval_rebalance_dates": [],
+            "backtest_rebalance_dates": [],
         }
         if test_df_full is None or test_df_full.empty:
             logger.info("%sEvaluation skipped: no data.", label_prefix)
@@ -2047,22 +2074,25 @@ def run(config_ref: str | Path | None = None) -> None:
 
         eval_df_full = test_df_full.copy()
         eval_df_full["pred"] = model_eval.predict(eval_df_full[FEATURES])
-        if SAMPLE_ON_REBALANCE_DATES:
-            test_eval_df = eval_df_full[eval_df_full["trade_date"].isin(test_dates)].copy()
-        else:
-            test_eval_df = eval_df_full
-        signal_col = "pred"
+        eval_df_full["signal_eval"] = eval_df_full["pred"] * SIGNAL_DIRECTION
+        eval_df_full["signal_backtest"] = eval_df_full["pred"] * BACKTEST_SIGNAL_DIRECTION
         if SIGNAL_DIRECTION != 1.0:
-            eval_df_full["signal"] = eval_df_full["pred"] * SIGNAL_DIRECTION
-            if SAMPLE_ON_REBALANCE_DATES:
-                test_eval_df["signal"] = test_eval_df["pred"] * SIGNAL_DIRECTION
-            signal_col = "signal"
             logger.info("%sSignal direction applied to ranking: %s", label_prefix, SIGNAL_DIRECTION)
 
-        ic_series = daily_ic_series(test_eval_df, TARGET, signal_col)
+        eval_allowed_dates = test_dates if SAMPLE_ON_REBALANCE_DATES else None
+        eval_df, rebalance_dates_eval = sample_rebalance_frame(
+            eval_df_full,
+            frequency=REBALANCE_FREQUENCY,
+            valid_dates=valid_dates_set,
+            allowed_dates=eval_allowed_dates,
+        )
+        result["eval_rebalance_dates"] = rebalance_dates_eval
+
+        signal_col = "signal_eval"
+        ic_series = daily_ic_series(eval_df, TARGET, signal_col)
         ic_stats = summarize_ic(ic_series)
         logger.info(
-            "%sDaily IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
+            "%sRebalance-date IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
             label_prefix,
             ic_stats["mean"],
             ic_stats["std"],
@@ -2074,10 +2104,10 @@ def run(config_ref: str | Path | None = None) -> None:
         result["ic_series"] = ic_series
         result["ic_stats"] = ic_stats
 
-        pearson_ic_series = daily_ic_series(test_eval_df, TARGET, signal_col, method="pearson")
+        pearson_ic_series = daily_ic_series(eval_df, TARGET, signal_col, method="pearson")
         pearson_ic_stats = summarize_ic(pearson_ic_series)
         logger.info(
-            "%sDaily Pearson IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
+            "%sRebalance-date Pearson IC: mean=%.4f, std=%.4f, IR=%.2f, t=%.2f, p=%.4f (n=%s)",
             label_prefix,
             pearson_ic_stats["mean"],
             pearson_ic_stats["std"],
@@ -2089,7 +2119,7 @@ def run(config_ref: str | Path | None = None) -> None:
         result["pearson_ic_series"] = pearson_ic_series
         result["pearson_ic_stats"] = pearson_ic_stats
 
-        error_metrics = regression_error_metrics(test_eval_df[TARGET], test_eval_df[signal_col])
+        error_metrics = regression_error_metrics(eval_df[TARGET], eval_df[signal_col])
         result["error_metrics"] = error_metrics
         if error_metrics and error_metrics.get("n", 0) > 0:
             logger.info(
@@ -2101,7 +2131,7 @@ def run(config_ref: str | Path | None = None) -> None:
                 error_metrics.get("n", 0),
             )
 
-        hit_stats = hit_rate(test_eval_df[TARGET], test_eval_df[signal_col])
+        hit_stats = hit_rate(eval_df[TARGET], eval_df[signal_col])
         result["hit_rate"] = hit_stats
         if hit_stats and hit_stats.get("n", 0) > 0:
             logger.info(
@@ -2121,6 +2151,7 @@ def run(config_ref: str | Path | None = None) -> None:
                 PERM_TEST_RUNS,
                 PERM_TEST_SEED,
                 SIGNAL_DIRECTION,
+                rebalance_dates_eval,
             )
             if perm_scores:
                 perm_mean = np.nanmean(perm_scores)
@@ -2156,13 +2187,6 @@ def run(config_ref: str | Path | None = None) -> None:
                     label_horizon_effective,
                     rebalance_gap,
                 )
-        rebalance_dates_eval = rebalance_dates_full
-        if valid_dates_set:
-            rebalance_dates_eval = [d for d in rebalance_dates_eval if d in valid_dates_set]
-        if SAMPLE_ON_REBALANCE_DATES:
-            test_dates_set = set(pd.to_datetime(test_dates))
-            rebalance_dates_eval = [d for d in rebalance_dates_eval if d in test_dates_set]
-        eval_df = test_eval_df[test_eval_df["trade_date"].isin(rebalance_dates_eval)].copy()
 
         quantile_ts = quantile_returns(eval_df, signal_col, TARGET, N_QUANTILES)
         quantile_mean = quantile_ts.mean() if not quantile_ts.empty else pd.Series(dtype=float)
@@ -2179,14 +2203,17 @@ def run(config_ref: str | Path | None = None) -> None:
             logger.info("%sQuantile returns not available - insufficient symbols per date.", label_prefix)
 
         k = min(TOP_K, eval_df["ts_code"].nunique()) if not eval_df.empty else 0
-        turnover_series = estimate_turnover(
-            eval_df,
-            signal_col,
-            k,
-            rebalance_dates_eval,
-            buffer_exit=EVAL_BUFFER_EXIT,
-            buffer_entry=EVAL_BUFFER_ENTRY,
-        )
+        if k > 0 and rebalance_dates_eval:
+            turnover_series = estimate_turnover(
+                eval_df,
+                signal_col,
+                k,
+                rebalance_dates_eval,
+                buffer_exit=EVAL_BUFFER_EXIT,
+                buffer_entry=EVAL_BUFFER_ENTRY,
+            )
+        else:
+            turnover_series = pd.Series(dtype=float, name="turnover")
         result["turnover_series"] = turnover_series
         if not turnover_series.empty:
             turnover = turnover_series.mean()
@@ -2220,12 +2247,12 @@ def run(config_ref: str | Path | None = None) -> None:
             bucket_frames = []
             for scheme in BUCKET_IC_SCHEMES:
                 col = scheme["column"]
-                if col not in test_eval_df.columns:
+                if col not in eval_df.columns:
                     continue
                 bucket_type = str(scheme.get("type", "category")).strip().lower()
                 if bucket_type not in {"category", "quantile"}:
                     bucket_type = "category"
-                data_for_bucket = test_eval_df.copy()
+                data_for_bucket = eval_df.copy()
                 bucket_col = col
                 if bucket_type == "quantile":
                     n_bins = int(scheme.get("n_bins") or 0)
@@ -2254,15 +2281,13 @@ def run(config_ref: str | Path | None = None) -> None:
                 bucket_df = pd.concat(bucket_frames, ignore_index=True)
                 result["bucket_ic"] = bucket_df.to_dict(orient="records")
 
-        bt_rebalance = get_rebalance_dates(
-            sorted(eval_df_full["trade_date"].unique()), BACKTEST_REBALANCE_FREQUENCY
+        _, bt_rebalance = sample_rebalance_frame(
+            eval_df_full,
+            frequency=BACKTEST_REBALANCE_FREQUENCY,
+            valid_dates=valid_dates_set,
         )
-        if valid_dates_set:
-            bt_rebalance = [d for d in bt_rebalance if d in valid_dates_set]
-        bt_pred_col = signal_col
-        if BACKTEST_SIGNAL_DIRECTION != SIGNAL_DIRECTION:
-            eval_df_full["signal_bt"] = eval_df_full["pred"] * BACKTEST_SIGNAL_DIRECTION
-            bt_pred_col = "signal_bt"
+        result["backtest_rebalance_dates"] = bt_rebalance
+        bt_pred_col = "signal_backtest"
 
         positions_by_rebalance = None
         if BACKTEST_ENABLED or not LIVE_ENABLED or not allow_live_fallback:
@@ -2389,6 +2414,10 @@ def run(config_ref: str | Path | None = None) -> None:
                                     bt_active_stats["alpha"] * 100,
                                 )
 
+        scored_cols = ["trade_date", "ts_code", PRICE_COL, TARGET, "pred", "signal_eval", "signal_backtest"]
+        if BACKTEST_TRADABLE_COL and BACKTEST_TRADABLE_COL in eval_df_full.columns:
+            scored_cols.append(BACKTEST_TRADABLE_COL)
+        result["scored_data"] = eval_df_full[scored_cols].copy()
         return result
 
     BACKTEST_SIGNAL_DIRECTION = (
@@ -2417,6 +2446,9 @@ def run(config_ref: str | Path | None = None) -> None:
     quantile_ts = eval_main["quantile_ts"]
     quantile_mean = eval_main["quantile_mean"]
     turnover_series = eval_main["turnover_series"]
+    eval_scored_data = eval_main["scored_data"]
+    eval_rebalance_dates = eval_main["eval_rebalance_dates"]
+    backtest_rebalance_dates = eval_main["backtest_rebalance_dates"]
     positions_by_rebalance = eval_main["positions_by_rebalance"]
     bt_stats = eval_main["bt_stats"]
     bt_net_series = eval_main["bt_net_series"]
@@ -2608,6 +2640,7 @@ def run(config_ref: str | Path | None = None) -> None:
 
     # Persist artifacts
     dataset_path: Optional[Path] = None
+    eval_scored_path: Optional[Path] = None
     if SAVE_ARTIFACTS:
         rolling_ic_files: dict[str, str] = {}
         rolling_sharpe_files: dict[str, str] = {}
@@ -2618,6 +2651,9 @@ def run(config_ref: str | Path | None = None) -> None:
         if SAVE_DATASET:
             dataset_path = run_dir / "dataset.parquet"
             save_parquet(dataset.as_multiindex(), dataset_path)
+        if eval_scored_data is not None and not eval_scored_data.empty:
+            eval_scored_path = run_dir / "eval_scored.parquet"
+            save_parquet(eval_scored_data, eval_scored_path)
         save_frame(importance_df, run_dir / "feature_importance.csv")
         save_series(ic_series, run_dir / "ic_test.csv", value_name="ic")
         save_series(pearson_ic_series, run_dir / "ic_pearson_test.csv", value_name="ic")
@@ -2895,11 +2931,20 @@ def run(config_ref: str | Path | None = None) -> None:
                 "buffer_exit": EVAL_BUFFER_EXIT,
                 "buffer_entry": EVAL_BUFFER_ENTRY,
                 "sample_on_rebalance_dates": SAMPLE_ON_REBALANCE_DATES,
+                "rebalance_frequency": REBALANCE_FREQUENCY,
+                "rebalance_dates": [
+                    pd.to_datetime(date).strftime("%Y%m%d") for date in eval_rebalance_dates
+                ],
+                "scored_file": str(eval_scored_path) if eval_scored_path else None,
+                "scored_pred_col": "pred",
+                "scored_signal_col": "signal_eval",
+                "scored_signal_backtest_col": "signal_backtest",
                 "permutation_test": perm_stats,
             },
             "backtest": {
                 "enabled": BACKTEST_ENABLED,
                 "exit_mode": BACKTEST_EXIT_MODE,
+                "exit_horizon_days": BACKTEST_EXIT_HORIZON_DAYS,
                 "exit_price_policy": BACKTEST_EXIT_PRICE_POLICY,
                 "exit_fallback_policy": BACKTEST_EXIT_FALLBACK_POLICY,
                 "buffer_exit": BACKTEST_BUFFER_EXIT,
@@ -2908,6 +2953,13 @@ def run(config_ref: str | Path | None = None) -> None:
                 "top_k": BACKTEST_TOP_K,
                 "short_k": BACKTEST_SHORT_K,
                 "rebalance_frequency": BACKTEST_REBALANCE_FREQUENCY,
+                "rebalance_dates": [
+                    pd.to_datetime(date).strftime("%Y%m%d")
+                    for date in backtest_rebalance_dates
+                ],
+                "shift_days": LABEL_SHIFT_DAYS,
+                "trading_days_per_year": BACKTEST_TRADING_DAYS_PER_YEAR,
+                "tradable_col": BACKTEST_TRADABLE_COL,
                 "signal_direction": BACKTEST_SIGNAL_DIRECTION,
                 "benchmark_symbol": benchmark_symbol,
                 "transaction_cost_bps": BACKTEST_COST_BPS_REPORT,
