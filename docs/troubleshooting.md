@@ -97,4 +97,3 @@ csxgb rqdata quota --pretty
 ```bash
 csxgb init-config --market hk --out config/
 ```
-
