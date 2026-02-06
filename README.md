@@ -173,6 +173,13 @@ data:
 * 参数：`--market default/cn/hk/us`、`--out`（文件或目录）、`--force`（允许覆盖）。
 * 覆盖保护：目标存在且没 `--force` 就拒绝覆盖。
 
+### 11) `csxgb summarize`
+
+* 作用：跨多个历史 run 目录聚合关键指标（读取每个 run 的 `summary.json` + `config.used.yml`），输出总表 CSV。
+* 默认扫描：`out/runs`（递归）。
+* 常用参数：`--runs-dir`（可重复传多个目录）、`--output`（默认 `<runs-dir>/runs_summary.csv`）。
+* 额外筛选列：会自动生成 `flag_short_sample`、`flag_negative_long_short`、`flag_high_turnover` 和 `score`，便于快速筛选异常/候选 run。
+
 常用指令：
 
 ```bash
@@ -184,6 +191,9 @@ csxgb run --config config/hk_selected.yml
 
 # Top-K × 成本敏感性网格
 csxgb grid --config config/hk.yml
+
+# 跨 run 汇总总表（研究对比）
+csxgb summarize --runs-dir out/runs --output out/runs/runs_summary.csv
 
 # 当期持仓清单（从最近一次 run 读取）
 csxgb holdings --config config/hk.yml --as-of t-1

@@ -9,7 +9,7 @@ def test_cli_parses_run_command():
     assert callable(args.func)
 
 
-def test_cli_parses_holdings_snapshot_grid():
+def test_cli_parses_holdings_snapshot_grid_summarize():
     parser = cli.build_parser()
 
     holdings = parser.parse_args(["holdings", "--config", "default"])
@@ -25,6 +25,11 @@ def test_cli_parses_holdings_snapshot_grid():
     assert grid.command == "grid"
     assert grid.top_k == ["5,10"]
     assert grid.cost_bps == ["10,20"]
+
+    summarize = parser.parse_args(["summarize", "--runs-dir", "out/runs"])
+    assert summarize.command == "summarize"
+    assert summarize.runs_dir == ["out/runs"]
+    assert summarize.short_sample_periods == 24
 
 
 def test_cli_parses_rqdata_quota_pretty():

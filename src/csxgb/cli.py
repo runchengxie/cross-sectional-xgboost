@@ -257,6 +257,13 @@ def _handle_grid(args) -> int:
     return 0
 
 
+def _handle_summarize(args) -> int:
+    from .project_tools import summarize_runs
+
+    summarize_runs.run(args)
+    return 0
+
+
 def _handle_holdings(args) -> int:
     from .project_tools import holdings
 
@@ -383,6 +390,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_grid.add_grid_args(grid)
     grid.set_defaults(func=_handle_grid)
+
+    summarize = subparsers.add_parser(
+        "summarize", help="Aggregate saved runs into a summary CSV"
+    )
+    from .project_tools import summarize_runs
+
+    summarize_runs.add_summarize_args(summarize)
+    summarize.set_defaults(func=_handle_summarize)
 
     holdings = subparsers.add_parser("holdings", help="Show latest holdings from saved runs")
     holdings.add_argument(
