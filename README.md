@@ -237,10 +237,11 @@ csxgb universe hk-connect --mode daily
 1. 数据源差异：`docs/providers.md`
 1. 常见故障：`docs/troubleshooting.md`
 1. 开发与测试：`docs/dev.md`
-1. 功能全景：`docs/full_function.md`
+1. 功能全景与规格边界（关键参数入口）：`docs/full_function.md`
 1. 贡献说明：`CONTRIBUTING.md`
 
 `docs/index.md` 提供集中导航与起步参数清单。
+`docs/full_function.md` 聚焦流程全景、关键参数入口、边界与工时估算，不替代 `docs/config.md` 与 `docs/cli.md` 的完整参数清单。
 
 ## 输出产物
 
@@ -249,7 +250,7 @@ csxgb universe hk-connect --mode daily
 * 持仓清单：`positions_by_rebalance.csv`、`positions_current.csv`、`signal_asof`、`next_entry_date`、`holding_window` 字段；`holding_window` 约定为 `entry_date -> next_entry_date`（next 为空表示最新持仓区间）。
 * Live 持仓清单：`positions_by_rebalance_live.csv`、`positions_current_live.csv`
 * 再平衡差异：`rebalance_diff.csv`、`rebalance_diff_live.csv`
-* Live 最新指针：`out/live_runs/latest.json`（指向最新 live run）
+* Live 最新指针：`<eval.output_dir>/latest.json`（仅 `live.enabled=true` 时写入）
 * 详细字段说明见 `docs/outputs.md`。
 
 ## 模型假设
