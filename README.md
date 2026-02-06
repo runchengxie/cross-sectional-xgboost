@@ -6,7 +6,7 @@
 
 ## 项目逻辑
 
-为简化项目复杂度，该项目交易频率按月计，交易频率地，假设交易执行以手动下单为主（或者其他的辅助项目），该项目以“研究 + 信号/建议持仓快照”为主，暂不考虑交易执行，也就是说，该项目暂时不考虑的功能包括但不限于：
+为简化项目复杂度，项目默认按月再平衡，假设交易执行以手动下单（或外部执行系统）为主。本项目以“研究 + 信号/建议持仓快照”为核心，暂不覆盖交易执行链路，也就是说，该项目暂不考虑的功能包括但不限于：
 
 1. 账户/持仓对账
 
@@ -38,6 +38,7 @@
 * 数据源可用性取决于供应商 API 与账号权限（TuShare/RQData/EODHD）；README 不保证实时可用性。
 * 数据可能回补/修订，导致相同配置在不同时间得到不同结果。
 * 想要可复现：固定 `data.start_date/end_date`，避免 `today/now`；保留 `cache/` Parquet；设置 `data.cache_tag`；归档 `out/runs/` 与 `config.used.yml`；记录代码版本（git commit hash）。
+* 多数据源差异、symbol 规则与缓存行为见 `docs/providers.md`。
 
 ## 快速指南
 
@@ -64,13 +65,19 @@ pip install -e .
 pip install -e .[rqdata]
 ```
 
-准备环境变量（见 `Credentials`）：
+准备环境变量（见下文“Credentials / 环境变量”）：
 
 ```bash
 cp .env.example .env
 ```
 
-## 数据库变量
+## Credentials / 环境变量
+
+Token/账号需要你在对应数据供应商侧申请。最小必需项取决于 `data.provider`：
+
+* `tushare`：至少 `TUSHARE_TOKEN`
+* `rqdata`：`RQDATA_USERNAME` + `RQDATA_PASSWORD`
+* `eodhd`：`EODHD_API_TOKEN`
 
 环境变量清单（推荐写入 `.env`）：
 
@@ -203,6 +210,23 @@ csxgb universe hk-connect --mode daily
 
 配置参考与模板说明 `docs/config.md`。
 
+## 文档导航
+
+建议阅读顺序：
+
+1. 快速上手（本 README）
+1. 常见研究流程：`docs/cookbook.md`
+1. 配置参数：`docs/config.md`
+1. 指标口径：`docs/metrics.md`
+1. 输出字段/schema：`docs/outputs.md`
+1. 数据源差异：`docs/providers.md`
+1. 常见故障：`docs/troubleshooting.md`
+1. 开发与测试：`docs/dev.md`
+1. 功能全景：`docs/full_function.md`
+1. 贡献说明：`CONTRIBUTING.md`
+
+`docs/index.md` 提供集中导航与起步参数清单。
+
 ## 输出产物
 
 * 产物目录：`out/runs/<run_name>_<timestamp>_<hash>/`
@@ -211,6 +235,7 @@ csxgb universe hk-connect --mode daily
 * Live 持仓清单：`positions_by_rebalance_live.csv`、`positions_current_live.csv`
 * 再平衡差异：`rebalance_diff.csv`、`rebalance_diff_live.csv`
 * Live 最新指针：`out/live_runs/latest.json`（指向最新 live run）
+* 详细字段说明见 `docs/outputs.md`。
 
 ## 模型假设
 

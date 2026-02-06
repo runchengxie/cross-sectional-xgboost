@@ -8,6 +8,11 @@
 csxgb init-config --market hk --out config/
 ```
 
+补充文档：
+
+* 输出字段与产物说明：`docs/outputs.md`
+* 数据源差异与缓存行为：`docs/providers.md`
+
 ## 关键参数
 
 * `universe`：股票池、过滤条件、最小截面规模（支持 `by_date_file` 动态池；可用 `mode/require_by_date/suspended_policy` 明确 PIT 与停牌处理）
