@@ -99,6 +99,12 @@ csxgb holdings --run-dir out/runs/<run_dir> --format csv --out out/positions/lat
 
 ## 5) `csxgb snapshot`
 
+> snapshot 在效果上等价于先后运行 run 和 holdings 两个命令，价值是流程封装 + 降低出错率，虽然看起来多余，但是设计思路包括：
+>
+> * 一条命令保证先产出再读取：不会出现忘了先跑 run，或者跑了别的 config，然后 holdings 读到旧结果的意外。
+> * 更适合脚本/定时任务：对 crontab、CI、Airflow 这种自动化逻辑更友好，一次命令完成一个完整动作。
+> * 支持 --skip-run / --run-dir：有利于指定对某个特定 run 目录出快照，而不依赖项目的 auto 默认最近一次run。
+
 用途：live 快照（默认先 run，再输出 live holdings）。
 
 参数：
