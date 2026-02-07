@@ -49,6 +49,7 @@
 | `next_entry_date` | 下一次入场日（最后一期为空） |
 | `holding_window` | `entry_date -> next_entry_date`（最后一期为 `entry_date`） |
 | `ts_code` | 标的代码（内部标准格式） |
+| `stock_ticker` | 标的代码（外部通用别名，等价于 `ts_code`） |
 | `weight` | 目标权重（long-only 下通常等权） |
 | `signal` | 该标的预测信号值 |
 | `rank` | 当期截面排序名次 |
@@ -57,6 +58,11 @@
 ### `positions_current.csv` / `positions_current_live.csv`
 
 只保留最新 `entry_date` 的那一组持仓，列结构与 `positions_by_rebalance` 一致。
+
+兼容说明：
+
+1. 项目内部仍以 `ts_code` 作为主字段。
+1. 对外消费（CLI JSON/CSV）可使用 `stock_ticker`，其值与 `ts_code` 一致。
 
 ### `positions_by_rebalance_oos.csv` / `positions_current_oos.csv`
 
@@ -70,6 +76,7 @@
 | --- | --- |
 | `entry_date` / `entry_date_prev` | 当前与上一期入场日 |
 | `ts_code` / `side` | 标的与方向 |
+| `stock_ticker` | 标的代码外部别名（等价于 `ts_code`） |
 | `weight` / `weight_prev` | 当前与上一期权重（缺失补 0） |
 | `signal` / `signal_prev` | 当前与上一期信号 |
 | `rank` / `rank_prev` | 当前与上一期 rank |
@@ -97,4 +104,3 @@
 1. `eval_scored.parquet`：评估样本打分明细（启用 artifact 时）。
 1. `ic_*.csv`、`quantile_returns.csv`、`backtest_*.csv`：指标时序数据。
 1. `feature_importance.csv`：模型特征重要性。
-

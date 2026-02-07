@@ -482,10 +482,12 @@ def main(argv: list[str] | None = None) -> None:
         threshold = liq.quantile(top_quantile)
         selected = liq[liq >= threshold].sort_values(ascending=False)
         for order_book_id, metric in selected.items():
+            ts_code = normalize_hk_symbol(order_book_id)
             results.append(
                 {
                     "trade_date": reb_date.strftime("%Y%m%d"),
-                    "ts_code": normalize_hk_symbol(order_book_id),
+                    "ts_code": ts_code,
+                    "stock_ticker": ts_code,
                     "liq_metric": float(metric),
                     "selected": 1,
                 }

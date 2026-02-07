@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from ..config_utils import resolve_pipeline_config
 from ..data_providers import normalize_market
 from . import holdings
+from .symbols import ensure_symbol_columns
 
 
 def _load_config(path: str | None) -> dict:
@@ -302,8 +303,6 @@ def _select_from_positions_file(
         raise SystemExit(f"{positions_path.name} is empty.")
     if "entry_date" not in df.columns:
         raise SystemExit(f"{positions_path.name} is missing entry_date.")
-    if "ts_code" not in df.columns:
-        raise SystemExit(f"{positions_path.name} is missing ts_code.")
     entry_dates = holdings._parse_date_column(df["entry_date"])
     if entry_dates.isna().all():
         raise SystemExit("Failed to parse entry_date column.")
@@ -312,6 +311,7 @@ def _select_from_positions_file(
         raise SystemExit("No holdings available before the requested --as-of date.")
     latest_entry = entry_dates[eligible].max()
     selection = df[entry_dates == latest_entry].copy()
+    selection = ensure_symbol_columns(selection, context=positions_path.name)
     if selection.empty:
         raise SystemExit("No holdings found for the latest entry date.")
     return selection, latest_entry
@@ -347,9 +347,7 @@ def _prepare_selection(
     side: str,
     top_n: int,
 ) -> pd.DataFrame:
-    if "ts_code" not in selection.columns:
-        raise SystemExit("Holdings payload is missing ts_code.")
-    prepared = selection.copy()
+    prepared = ensure_symbol_columns(selection, context="Holdings payload")
     if "side" not in prepared.columns:
         prepared["side"] = "long"
     if "rank" not in prepared.columns:
@@ -395,6 +393,7 @@ def _allocate_equal_weight(
         rows.append(
             {
                 "ts_code": ts_code,
+                "stock_ticker": ts_code,
                 "order_book_id": order_book_id,
                 "side": str(row.get("side", "long")),
                 "rank": int(rank_value) if pd.notna(rank_value) else None,
@@ -417,42 +416,43 @@ def _allocate_equal_weight(
 
 def _render_text(payload: dict, alloc_df: pd.DataFrame) -> str:
     lines = [
-        f"As-of: {payload['as_of']}",
-        f"Entry date: {payload['entry_date']}",
-        f"Price date: {payload['price_date']}",
-        f"Source: {payload['source']}",
-        f"Side: {payload['side']}",
-        f"Top-N requested/used: {payload['requested_top_n']} / {payload['selected_n']}",
-        f"Cash: {_money(float(payload['cash']))}",
-        f"Investable cash: {_money(float(payload['investable_cash']))}",
-        f"Estimated invested: {_money(float(payload['estimated_value']))}",
-        f"Estimated cash left: {_money(float(payload['cash_left']))}",
+        f"截至日期: {payload['as_of']}",
+        f"建仓日期: {payload['entry_date']}",
+        f"价格日期: {payload['price_date']}",
+        f"来源: {payload['source']}",
+        f"方向: {payload['side']}",
+        f"Top-N 请求/实际: {payload['requested_top_n']} / {payload['selected_n']}",
+        f"总资金: {_money(float(payload['cash']))}",
+        f"可投资资金: {_money(float(payload['investable_cash']))}",
+        f"预计持仓金额: {_money(float(payload['estimated_value']))}",
+        f"预计剩余现金: {_money(float(payload['cash_left']))}",
+        f"目标缺口合计: {_money(float(payload['total_gap_to_target']))}",
     ]
     if payload.get("run_dir"):
-        lines.append(f"Run dir: {payload['run_dir']}")
+        lines.append(f"运行目录: {payload['run_dir']}")
     if payload.get("positions_file"):
-        lines.append(f"Positions file: {payload['positions_file']}")
+        lines.append(f"持仓文件: {payload['positions_file']}")
     lines.append("")
 
     table_headers = [
-        "ts_code",
-        "price",
-        "round_lot",
-        "target_value",
+        "stock_ticker",
         "lots",
-        "shares",
-        "est_value",
-        "gap_to_target",
+        "价格",
+        "每手股数",
+        "目标金额",
+        "股数",
+        "预计金额",
+        "目标缺口",
     ]
     table_rows: list[list[str]] = []
     for _, row in alloc_df.iterrows():
         table_rows.append(
             [
-                str(row["ts_code"]),
+                str(row["stock_ticker"]),
+                str(int(row["lots"])),
                 f"{float(row['price']):.4f}",
                 str(int(row["round_lot"])),
                 _money(float(row["target_value"])),
-                str(int(row["lots"])),
                 str(int(row["shares"])),
                 _money(float(row["est_value"])),
                 _money(float(row["gap_to_target"])),
@@ -631,6 +631,7 @@ def main(argv: list[str] | None = None) -> None:
         price_map=price_map,
         lot_map=lot_map,
     )
+    total_gap_to_target = float(alloc_df["gap_to_target"].sum())
 
     payload = {
         "as_of": as_of.strftime("%Y-%m-%d"),
@@ -649,6 +650,7 @@ def main(argv: list[str] | None = None) -> None:
         "investable_cash": float(investable_cash),
         "estimated_value": float(est_total),
         "cash_left": float(cash_left),
+        "total_gap_to_target": total_gap_to_target,
         "price_field": args.price_field,
         "allocations": alloc_df.to_dict(orient="records"),
     }

@@ -172,6 +172,7 @@ data:
 ### 9) `csxgb universe index-components`
 
 * 作用：从 TuShare 拉“指数成分”，写成一个 symbols 文本文件（每行一个）。
+* 使用 `--by-date-out` 时，PIT CSV 会输出 `trade_date`、`ts_code`、`stock_ticker`（其中 `stock_ticker` 为外部通用别名）。
 * 鉴权：必须先设 `TUSHARE_TOKEN`（或 `TUSHARE_TOKEN_2` / legacy `TUSHARE_API_KEY`），否则直接退出。
 * 实现方式：CLI 这层用 `argparse.REMAINDER` 把剩余参数原样转发给脚本（所以脚本支持什么参数，以脚本为准）。
 
@@ -183,6 +184,7 @@ data:
   * `out/universe/universe_by_date.csv`
   * `out/universe/hk_connect_symbols.txt`
   * meta：`out/universe/universe_by_date.meta.yml`
+* `universe_by_date.csv` 会同时包含 `ts_code` 与 `stock_ticker` 两列（值一致）。
 * 参数入口：`csxgb universe hk-connect --config <yaml> ...`，其余参数同样是转发给脚本。
 
 ### 11) `csxgb init-config`

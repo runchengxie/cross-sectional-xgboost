@@ -411,6 +411,35 @@ def save_parquet(frame: pd.DataFrame, path: Path) -> None:
     _atomic_write(path, _write)
 
 
+def _ensure_symbol_alias(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return frame
+    has_ts_code = "ts_code" in frame.columns
+    has_stock_ticker = "stock_ticker" in frame.columns
+    if not has_ts_code and not has_stock_ticker:
+        return frame
+
+    out = frame.copy()
+    ts_series = (
+        out["ts_code"].where(out["ts_code"].notna(), "").astype(str).str.strip()
+        if has_ts_code
+        else pd.Series([""] * len(out), index=out.index, dtype="object")
+    )
+    if has_stock_ticker:
+        ticker_series = out["stock_ticker"].where(out["stock_ticker"].notna(), "").astype(str).str.strip()
+        merged = ticker_series.where(ticker_series != "", ts_series)
+    else:
+        merged = ts_series
+
+    out["ts_code"] = merged
+    if "stock_ticker" in out.columns:
+        out["stock_ticker"] = merged
+    else:
+        ts_idx = out.columns.get_loc("ts_code")
+        out.insert(ts_idx + 1, "stock_ticker", merged)
+    return out
+
+
 def save_json(payload: dict, path: Path) -> None:
     def _write(tmp_path: Path) -> None:
         with tmp_path.open("w", encoding="utf-8") as handle:
@@ -444,13 +473,13 @@ def _annotate_positions_window(frame: pd.DataFrame) -> pd.DataFrame:
             unique_entries[idx]: unique_entries[idx + 1]
             for idx in range(len(unique_entries) - 1)
         }
-        next_entry = entry_dt.map(next_map)
+        next_entry = pd.to_datetime(entry_dt.map(next_map), errors="coerce")
         next_entry_str = next_entry.dt.strftime("%Y%m%d").where(next_entry.notna(), "")
         out["next_entry_date"] = next_entry_str
         holding_window = out["entry_date"].astype(str) + " -> " + out["next_entry_date"]
         holding_window = holding_window.where(out["next_entry_date"].astype(str) != "", out["entry_date"])
         out["holding_window"] = holding_window
-    return out
+    return _ensure_symbol_alias(out)
 
 
 def _build_rebalance_diff(frame: pd.DataFrame) -> pd.DataFrame:
@@ -509,7 +538,7 @@ def _build_rebalance_diff(frame: pd.DataFrame) -> pd.DataFrame:
     merged["entry_date_prev"] = prev_entry.strftime("%Y%m%d")
     merged.drop(columns=["_merge"], inplace=True)
     merged.sort_values(["change", "side", "ts_code"], inplace=True)
-    return merged
+    return _ensure_symbol_alias(merged)
 
 
 def normalize_symbol_list(value) -> list[str]:
@@ -569,7 +598,12 @@ def load_universe_by_date(path: Path, market: str) -> pd.DataFrame:
         sys.exit(f"Universe-by-date file is empty: {path}")
     columns = {col.lower(): col for col in df.columns}
     date_col = columns.get("trade_date") or columns.get("date") or columns.get("rebalance_date")
-    symbol_col = columns.get("ts_code") or columns.get("symbol") or columns.get("order_book_id")
+    symbol_col = (
+        columns.get("ts_code")
+        or columns.get("stock_ticker")
+        or columns.get("symbol")
+        or columns.get("order_book_id")
+    )
     if not date_col or not symbol_col:
         sys.exit("Universe-by-date file must include date + symbol columns.")
 

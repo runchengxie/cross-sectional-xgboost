@@ -90,6 +90,10 @@ csxgb summarize --runs-dir out/runs --since 2026-02-01
 * `--format <fmt>`：`text/csv/json`（默认 `text`）。
 * `--out <path>`：输出到文件；不传则 stdout。
 
+字段兼容：
+
+1. 读取到的持仓文件中，标的列支持 `ts_code` 或 `stock_ticker`（推荐 `stock_ticker`）。
+
 示例：
 
 ```bash
@@ -146,6 +150,10 @@ csxgb snapshot --config config/hk_live.yml --skip-run --format json
 * `--format <fmt>`：`text/csv/json`（默认 `text`）。
 * `--out <path>`：输出到文件；不传则 stdout。
 
+字段兼容：
+
+1. `--positions-file` 中标的列支持 `ts_code` 或 `stock_ticker`（推荐 `stock_ticker`）。
+
 示例：
 
 ```bash
@@ -196,6 +204,7 @@ csxgb alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv 
 参数：
 
 * CLI 会将后续参数原样转发到底层脚本（`fetch_index_components.py`）。
+* 使用 `--by-date-out` 时，PIT CSV 会输出 `trade_date`、`ts_code`、`stock_ticker` 三列。
 
 常见示例：
 
@@ -211,6 +220,7 @@ csxgb universe index-components --index-code 000300.SH --month 202501
 
 * `--config <path_or_alias>`：可选配置路径。
 * 其余参数原样转发到底层脚本（`build_hk_connect_universe.py`）。
+* 产出的 by-date CSV 会同时包含 `ts_code` 与 `stock_ticker`。
 
 常见示例：
 

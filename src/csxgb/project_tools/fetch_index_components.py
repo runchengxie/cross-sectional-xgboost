@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", help="Output file for symbols (one per line)")
     parser.add_argument(
         "--by-date-out",
-        help="Output CSV with trade_date,ts_code for PIT universe (by_date_file)",
+        help="Output CSV with trade_date + symbol columns (ts_code/stock_ticker) for PIT universe.",
     )
     args = parser.parse_args(argv)
 
@@ -117,7 +117,9 @@ def main(argv: list[str] | None = None) -> None:
         by_date_path.parent.mkdir(parents=True, exist_ok=True)
         universe = df[["trade_date", "con_code"]].dropna().copy()
         universe.rename(columns={"con_code": "ts_code"}, inplace=True)
+        universe["stock_ticker"] = universe["ts_code"]
         universe = universe.drop_duplicates()
+        universe = universe[["trade_date", "ts_code", "stock_ticker"]]
         universe.to_csv(by_date_path, index=False)
 
     print(f"Index: {index_code}")

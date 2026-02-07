@@ -85,11 +85,11 @@ def test_holdings_asof_before_entries_raises(tmp_path):
         )
 
 
-def test_holdings_missing_ts_code_raises(tmp_path):
+def test_holdings_missing_symbol_column_raises(tmp_path):
     run_dir = tmp_path / "run"
     df = pd.DataFrame({"entry_date": ["2020-01-02"], "weight": [1.0]})
     _write_positions(run_dir, df)
-    with pytest.raises(SystemExit, match="positions_by_rebalance.csv is missing ts_code."):
+    with pytest.raises(SystemExit, match="positions_by_rebalance.csv is missing ts_code/stock_ticker."):
         holdings.main(
             [
                 "--run-dir",
