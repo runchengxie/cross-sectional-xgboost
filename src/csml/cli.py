@@ -257,6 +257,49 @@ def _handle_grid(args) -> int:
     return 0
 
 
+def _handle_sweep_linear(args) -> int:
+    from .project_tools import linear_sweep
+
+    argv: list[str] = []
+    if getattr(args, "config", None):
+        argv += ["--config", args.config]
+    if getattr(args, "run_name_prefix", None):
+        argv += ["--run-name-prefix", args.run_name_prefix]
+    if getattr(args, "sweeps_dir", None):
+        argv += ["--sweeps-dir", args.sweeps_dir]
+    if getattr(args, "tag", None):
+        argv += ["--tag", args.tag]
+    if getattr(args, "runs_dir", None):
+        argv += ["--runs-dir", args.runs_dir]
+    if getattr(args, "ridge_alpha", None):
+        for entry in args.ridge_alpha:
+            argv += ["--ridge-alpha", entry]
+    if getattr(args, "elasticnet_alpha", None):
+        for entry in args.elasticnet_alpha:
+            argv += ["--elasticnet-alpha", entry]
+    if getattr(args, "elasticnet_l1_ratio", None):
+        for entry in args.elasticnet_l1_ratio:
+            argv += ["--elasticnet-l1-ratio", entry]
+    if getattr(args, "skip_ridge", None):
+        argv += ["--skip-ridge"]
+    if getattr(args, "skip_elasticnet", None):
+        argv += ["--skip-elasticnet"]
+    if getattr(args, "dry_run", None):
+        argv += ["--dry-run"]
+    if getattr(args, "continue_on_error", None):
+        argv += ["--continue-on-error"]
+    if getattr(args, "skip_summarize", None):
+        argv += ["--skip-summarize"]
+    if getattr(args, "summary_output", None):
+        argv += ["--summary-output", args.summary_output]
+    if getattr(args, "log_level", None):
+        argv += ["--log-level", args.log_level]
+    if getattr(args, "args", None):
+        argv += list(args.args)
+    linear_sweep.main(argv)
+    return 0
+
+
 def _handle_summarize(args) -> int:
     from .project_tools import summarize_runs
 
@@ -430,6 +473,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_grid.add_grid_args(grid)
     grid.set_defaults(func=_handle_grid)
+
+    sweep_linear = subparsers.add_parser(
+        "sweep-linear",
+        help="Run ridge/elasticnet hyper-parameter sweep and auto summarize",
+    )
+    from .project_tools import linear_sweep
+
+    linear_sweep.add_linear_sweep_args(sweep_linear)
+    sweep_linear.set_defaults(func=_handle_sweep_linear)
 
     summarize = subparsers.add_parser(
         "summarize", help="Aggregate saved runs into a summary CSV"

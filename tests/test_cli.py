@@ -4,6 +4,7 @@ from csml import cli
 from csml.project_tools import alloc as alloc_tool
 from csml.project_tools import holdings as holdings_tool
 from csml.project_tools import run_grid as grid_tool
+from csml.project_tools import linear_sweep as sweep_tool
 
 
 def test_cli_parses_run_command():
@@ -37,6 +38,32 @@ def test_cli_parses_holdings_snapshot_grid_summarize_alloc():
     assert grid.command == "grid"
     assert grid.top_k == ["5,10"]
     assert grid.cost_bps == ["10,20"]
+
+    sweep = parser.parse_args(
+        [
+            "sweep-linear",
+            "--config",
+            "config/hk_selected.yml",
+            "--run-name-prefix",
+            "hk_sel_",
+            "--tag",
+            "exp_a",
+            "--ridge-alpha",
+            "0.01,0.1",
+            "--elasticnet-alpha",
+            "0.1",
+            "--elasticnet-l1-ratio",
+            "0.5",
+            "--dry-run",
+        ]
+    )
+    assert sweep.command == "sweep-linear"
+    assert sweep.run_name_prefix == "hk_sel_"
+    assert sweep.tag == "exp_a"
+    assert sweep.ridge_alpha == ["0.01,0.1"]
+    assert sweep.elasticnet_alpha == ["0.1"]
+    assert sweep.elasticnet_l1_ratio == ["0.5"]
+    assert sweep.dry_run is True
 
     summarize = parser.parse_args(
         [
@@ -194,5 +221,59 @@ def test_cli_handle_grid_passes_through_args(monkeypatch):
             "DEBUG",
             "--extra",
             "1",
+        ]
+    ]
+
+
+def test_cli_handle_sweep_linear_passes_through_args(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sweep_tool, "main", lambda argv: calls.append(argv))
+
+    args = SimpleNamespace(
+        config="config/hk_selected.yml",
+        run_name_prefix="hk_sel_",
+        sweeps_dir="out/sweeps",
+        tag="exp_1",
+        runs_dir="out/runs",
+        ridge_alpha=["0.01,0.1", "1"],
+        elasticnet_alpha=["0.01,0.1"],
+        elasticnet_l1_ratio=["0.1,0.5"],
+        skip_ridge=False,
+        skip_elasticnet=True,
+        dry_run=True,
+        continue_on_error=True,
+        skip_summarize=False,
+        summary_output="out/sweeps/exp_1/runs_summary.csv",
+        log_level="DEBUG",
+        args=None,
+    )
+    assert cli._handle_sweep_linear(args) == 0
+    assert calls == [
+        [
+            "--config",
+            "config/hk_selected.yml",
+            "--run-name-prefix",
+            "hk_sel_",
+            "--sweeps-dir",
+            "out/sweeps",
+            "--tag",
+            "exp_1",
+            "--runs-dir",
+            "out/runs",
+            "--ridge-alpha",
+            "0.01,0.1",
+            "--ridge-alpha",
+            "1",
+            "--elasticnet-alpha",
+            "0.01,0.1",
+            "--elasticnet-l1-ratio",
+            "0.1,0.5",
+            "--skip-elasticnet",
+            "--dry-run",
+            "--continue-on-error",
+            "--summary-output",
+            "out/sweeps/exp_1/runs_summary.csv",
+            "--log-level",
+            "DEBUG",
         ]
     ]

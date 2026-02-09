@@ -43,7 +43,40 @@ csml run --config hk
 csml grid --config config/hk.yml --top-k 5,10 --cost-bps 15,25
 ```
 
-## 3) `csml summarize`
+## 3) `csml sweep-linear`
+
+用途：生成 Ridge/ElasticNet 网格配置，批量执行 `run`，并自动 `summarize` 导出对比表。
+
+参数：
+
+* `--config <path_or_alias>`：基础配置（默认 `config/hk_selected.yml`）。
+* `--run-name-prefix <prefix>`：批量 run_name 前缀（默认 `hk_sel_`）。
+* `--sweeps-dir <dir>`：sweep 产物根目录（默认 `out/sweeps`）。
+* `--tag <name>`：本次实验标签（默认当前时间戳）。
+* `--runs-dir <dir>`：覆盖生成 config 的 `eval.output_dir`。
+* `--ridge-alpha <values>`：可重复传，支持逗号分隔（默认 `0.01,0.1,1,10,100`）。
+* `--elasticnet-alpha <values>`：可重复传，支持逗号分隔（默认 `0.01,0.1,1`）。
+* `--elasticnet-l1-ratio <values>`：可重复传，支持逗号分隔（默认 `0.1,0.5,0.9`）。
+* `--skip-ridge` / `--skip-elasticnet`：跳过某一类模型。
+* `--dry-run`：仅生成 configs/jobs 清单，不执行 run。
+* `--continue-on-error`：单个组合失败后继续跑后续组合。
+* `--skip-summarize`：跳过自动汇总。
+* `--summary-output <csv_path>`：汇总 CSV 输出路径（默认 `<sweep-dir>/runs_summary.csv`）。
+* `--log-level <level>`：日志级别（`CRITICAL/ERROR/WARNING/INFO/DEBUG`）。
+
+示例：
+
+```bash
+csml sweep-linear \
+  --config config/hk_selected.yml \
+  --run-name-prefix hk_sel_ \
+  --tag hk_linear_a \
+  --ridge-alpha 0.01,0.1,1,10,100 \
+  --elasticnet-alpha 0.01,0.1,1 \
+  --elasticnet-l1-ratio 0.1,0.5,0.9
+```
+
+## 4) `csml summarize`
 
 用途：跨历史 run 聚合 `summary.json` + `config.used.yml`，输出总表。
 
@@ -75,7 +108,7 @@ csml summarize --runs-dir out/runs --run-name-prefix hk_grid --latest-n 1
 csml summarize --runs-dir out/runs --since 2026-02-01
 ```
 
-## 4) `csml holdings`
+## 5) `csml holdings`
 
 用途：输出最近一次 run 的当前持仓。
 
@@ -102,7 +135,7 @@ csml holdings --config config/hk.yml --as-of t-1
 csml holdings --run-dir out/runs/<run_dir> --format csv --out out/positions/latest.csv
 ```
 
-## 5) `csml snapshot`
+## 6) `csml snapshot`
 
 > snapshot 在效果上等价于先后运行 run 和 holdings 两个命令，价值是流程封装 + 降低出错率，虽然看起来多余，但是设计思路包括：
 >
@@ -130,7 +163,7 @@ csml snapshot --config config/hk_live.yml
 csml snapshot --config config/hk_live.yml --skip-run --format json
 ```
 
-## 6) `csml alloc`
+## 7) `csml alloc`
 
 用途：按最新持仓做 Top-N 等权资金分配，自动换算为每只股票买多少手/股（价格和 round lot 来自 RQData）。
 
@@ -170,7 +203,7 @@ csml alloc --run-dir out/runs/<run_dir> --source live --top-n 10 --format json -
 csml alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv --top-n 5
 ```
 
-## 7) `csml rqdata info`
+## 8) `csml rqdata info`
 
 用途：初始化并显示 RQData 登录信息。
 
@@ -180,7 +213,7 @@ csml alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv -
 * `--username <name>`：覆盖用户名。
 * `--password <password>`：覆盖密码。
 
-## 8) `csml rqdata quota`
+## 9) `csml rqdata quota`
 
 用途：查询 RQData 配额。
 
@@ -191,7 +224,7 @@ csml alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv -
 * `--password <password>`：覆盖密码。
 * `--pretty`：人类可读格式输出。
 
-## 9) `csml tushare verify-token`
+## 10) `csml tushare verify-token`
 
 用途：验证 TuShare token。
 
@@ -200,7 +233,7 @@ csml alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv -
 * CLI 会将后续参数原样转发到底层脚本。
 * 推荐用 `csml tushare verify-token` 直接执行。
 
-## 10) `csml universe index-components`
+## 11) `csml universe index-components`
 
 用途：拉取指数成分并输出 symbols 文件。
 
@@ -215,7 +248,7 @@ csml alloc --positions-file out/runs/<run_dir>/positions_by_rebalance_live.csv -
 csml universe index-components --index-code 000300.SH --month 202501
 ```
 
-## 11) `csml universe hk-connect`
+## 12) `csml universe hk-connect`
 
 用途：构建港股通 PIT universe。
 
@@ -231,7 +264,7 @@ csml universe index-components --index-code 000300.SH --month 202501
 csml universe hk-connect --config config/universe.hk_connect.yml --mode daily
 ```
 
-## 12) `csml init-config`
+## 13) `csml init-config`
 
 用途：导出内置配置模板。
 
