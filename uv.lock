@@ -288,7 +288,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cross-sectional-xgboost"
+name = "cross-sectional-machine-learning"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
