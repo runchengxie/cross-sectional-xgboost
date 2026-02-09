@@ -202,6 +202,7 @@ CLI 全量参数请以 `docs/cli.md` 和 `csml <cmd> --help` 为准。
 
 * `csml run`
 * `csml grid`
+* `csml sweep-linear`
 * `csml summarize`
 * `csml holdings`
 * `csml snapshot`

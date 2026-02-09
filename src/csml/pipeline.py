@@ -213,6 +213,94 @@ def build_walk_forward_windows(
     return windows
 
 
+def _build_trade_date_slices(
+    frame: pd.DataFrame,
+    *,
+    date_col: str = "trade_date",
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, dict[pd.Timestamp, int]]:
+    ordered = frame.sort_values(date_col, kind="mergesort").reset_index(drop=True)
+    date_values = ordered[date_col].to_numpy()
+    if date_values.size == 0:
+        empty = np.array([], dtype=int)
+        return ordered, np.array([], dtype="datetime64[ns]"), empty, empty, {}
+
+    dates, start_rows = np.unique(date_values, return_index=True)
+    end_rows = np.empty_like(start_rows)
+    if len(start_rows) > 1:
+        end_rows[:-1] = start_rows[1:]
+    end_rows[-1] = len(ordered)
+    date_to_pos = {pd.to_datetime(date): idx for idx, date in enumerate(dates)}
+    return ordered, dates, start_rows, end_rows, date_to_pos
+
+
+def _slice_trade_date_range(
+    ordered: pd.DataFrame,
+    start_rows: np.ndarray,
+    end_rows: np.ndarray,
+    start_pos: int,
+    end_pos: int,
+) -> pd.DataFrame:
+    if start_pos < 0 or end_pos < start_pos:
+        return ordered.iloc[0:0].copy()
+    return ordered.iloc[start_rows[start_pos] : end_rows[end_pos]].copy()
+
+
+def _slice_trade_dates(
+    ordered: pd.DataFrame,
+    start_rows: np.ndarray,
+    end_rows: np.ndarray,
+    date_to_pos: dict[pd.Timestamp, int],
+    dates: np.ndarray | list[pd.Timestamp],
+    *,
+    date_col: str = "trade_date",
+) -> pd.DataFrame:
+    if len(dates) == 0:
+        return ordered.iloc[0:0].copy()
+    unique_dates = []
+    seen_dates: set[pd.Timestamp] = set()
+    for date in pd.to_datetime(dates):
+        date_ts = pd.Timestamp(date)
+        if date_ts in seen_dates:
+            continue
+        seen_dates.add(date_ts)
+        unique_dates.append(date_ts)
+    if not unique_dates:
+        return ordered.iloc[0:0].copy()
+
+    first = unique_dates[0]
+    last = unique_dates[-1]
+    start_pos = date_to_pos.get(first)
+    end_pos = date_to_pos.get(last)
+    if start_pos is not None and end_pos is not None:
+        expected_len = end_pos - start_pos + 1
+        if expected_len == len(unique_dates):
+            return _slice_trade_date_range(ordered, start_rows, end_rows, start_pos, end_pos)
+
+    positions = sorted({date_to_pos[date] for date in unique_dates if date in date_to_pos})
+    if not positions:
+        return ordered.iloc[0:0].copy()
+
+    ranges: list[tuple[int, int]] = []
+    range_start = positions[0]
+    range_end = positions[0]
+    for pos in positions[1:]:
+        if pos == range_end + 1:
+            range_end = pos
+            continue
+        ranges.append((range_start, range_end))
+        range_start = pos
+        range_end = pos
+    ranges.append((range_start, range_end))
+
+    parts = [
+        ordered.iloc[start_rows[start] : end_rows[end]]
+        for start, end in ranges
+    ]
+    if len(parts) == 1:
+        return parts[0].copy()
+    return pd.concat(parts, ignore_index=True)
+
+
 def _normalize_window_months(value: object | None, default: list[int]) -> list[int]:
     if value is None:
         return default
@@ -1504,20 +1592,54 @@ def run(config_ref: str | Path | None = None) -> None:
     if eval_extra_df is not None and not eval_extra_df.empty:
         eval_extra_df = eval_extra_df.drop_duplicates(subset=["trade_date", "ts_code"])
         df_full = df_full.merge(eval_extra_df, on=["trade_date", "ts_code"], how="left")
-    all_dates_full = np.array(sorted(df_full["trade_date"].unique()))
+    (
+        df_full_sorted,
+        all_dates_full,
+        full_date_start_rows,
+        full_date_end_rows,
+        full_date_to_pos,
+    ) = _build_trade_date_slices(df_full)
     rebalance_dates_all = None
     if SAMPLE_ON_REBALANCE_DATES:
         rebalance_dates_all = get_rebalance_dates(all_dates_full, REBALANCE_FREQUENCY)
-        df_model_all = df_full[df_full["trade_date"].isin(rebalance_dates_all)].copy()
+        df_model_all = _slice_trade_dates(
+            df_full_sorted,
+            full_date_start_rows,
+            full_date_end_rows,
+            full_date_to_pos,
+            rebalance_dates_all,
+        )
     else:
-        df_model_all = df_full
+        df_model_all = df_full_sorted
 
     # Drop dates with too few symbols for evaluation (model sample only)
     date_counts = df_model_all.groupby("trade_date")["ts_code"].nunique()
     valid_dates = date_counts[date_counts >= MIN_SYMBOLS_PER_DATE].index
     dropped_date_counts = date_counts[date_counts < MIN_SYMBOLS_PER_DATE].sort_index()
+    (
+        df_model_all_sorted,
+        all_dates_model_full,
+        model_date_start_rows,
+        model_date_end_rows,
+        model_date_to_pos,
+    ) = _build_trade_date_slices(df_model_all)
     if len(valid_dates) != len(date_counts):
-        df_model_all = df_model_all[df_model_all["trade_date"].isin(valid_dates)].copy()
+        df_model_all = _slice_trade_dates(
+            df_model_all_sorted,
+            model_date_start_rows,
+            model_date_end_rows,
+            model_date_to_pos,
+            valid_dates.to_numpy(),
+        )
+        (
+            df_model_all_sorted,
+            all_dates_model_full,
+            model_date_start_rows,
+            model_date_end_rows,
+            model_date_to_pos,
+        ) = _build_trade_date_slices(df_model_all)
+    else:
+        df_model_all = df_model_all_sorted
     if not dropped_date_counts.empty:
         logger.info(
             "Dropped %s dates with < %s symbols (min=%s, max=%s).",
@@ -1556,18 +1678,30 @@ def run(config_ref: str | Path | None = None) -> None:
             TEST_SIZE,
         )
     if FINAL_OOS_ENABLED:
-        all_dates_model_full = np.array(sorted(df_model_all["trade_date"].unique()))
         final_oos_len = _resolve_holdout_len(FINAL_OOS_SIZE_RAW, len(all_dates_model_full))
         if final_oos_len <= 0:
             FINAL_OOS_ENABLED = False
         elif final_oos_len >= len(all_dates_model_full):
             sys.exit("eval.final_oos.size leaves no in-sample dates.")
         else:
+            final_oos_start_pos = len(all_dates_model_full) - final_oos_len
             final_oos_dates = all_dates_model_full[-final_oos_len:]
             final_oos_start = pd.to_datetime(final_oos_dates[0])
             final_oos_end = pd.to_datetime(final_oos_dates[-1])
-            df_model_oos = df_model_all[df_model_all["trade_date"].isin(final_oos_dates)].copy()
-            df_model = df_model_all[~df_model_all["trade_date"].isin(final_oos_dates)].copy()
+            df_model_oos = _slice_trade_date_range(
+                df_model_all_sorted,
+                model_date_start_rows,
+                model_date_end_rows,
+                final_oos_start_pos,
+                len(all_dates_model_full) - 1,
+            )
+            df_model = _slice_trade_date_range(
+                df_model_all_sorted,
+                model_date_start_rows,
+                model_date_end_rows,
+                0,
+                final_oos_start_pos - 1,
+            )
             logger.info(
                 "Final OOS holdout enabled: %s dates (%s -> %s).",
                 final_oos_len,
@@ -1631,7 +1765,13 @@ def run(config_ref: str | Path | None = None) -> None:
 
     EFFECTIVE_GAP_STEPS = max(EMBARGO_STEPS, PURGE_STEPS)
 
-    all_dates = np.array(sorted(df_model["trade_date"].unique()))
+    (
+        df_model_sorted,
+        all_dates,
+        all_date_start_rows,
+        all_date_end_rows,
+        all_date_to_pos,
+    ) = _build_trade_date_slices(df_model)
     if len(all_dates) < 10:
         sys.exit("Not enough dates for a meaningful split.")
 
@@ -1642,8 +1782,20 @@ def run(config_ref: str | Path | None = None) -> None:
     train_dates = all_dates[:train_end]
     test_dates = all_dates[split_idx:]
 
-    train_df = df_model[df_model["trade_date"].isin(train_dates)].copy()
-    test_df = df_model[df_model["trade_date"].isin(test_dates)].copy()
+    train_df = _slice_trade_date_range(
+        df_model_sorted,
+        all_date_start_rows,
+        all_date_end_rows,
+        0,
+        train_end - 1,
+    )
+    test_df = _slice_trade_date_range(
+        df_model_sorted,
+        all_date_start_rows,
+        all_date_end_rows,
+        split_idx,
+        len(all_dates) - 1,
+    )
 
     if train_df.empty or test_df.empty:
         sys.exit("Not enough dates for train/test after embargo.")
@@ -1684,7 +1836,24 @@ def run(config_ref: str | Path | None = None) -> None:
         eval_dates: Optional[list[pd.Timestamp]] = None,
     ) -> list[float]:
         scores = []
-        eval_date_set = set(pd.to_datetime(eval_dates)) if eval_dates else None
+        eval_date_values = sorted(set(pd.to_datetime(eval_dates))) if eval_dates else None
+        if eval_date_values:
+            (
+                test_data_sorted,
+                _,
+                test_date_start_rows,
+                test_date_end_rows,
+                test_date_to_pos,
+            ) = _build_trade_date_slices(test_data)
+            eval_test_data = _slice_trade_dates(
+                test_data_sorted,
+                test_date_start_rows,
+                test_date_end_rows,
+                test_date_to_pos,
+                eval_date_values,
+            )
+        else:
+            eval_test_data = test_data
         for idx in range(n_runs):
             run_seed = None if seed is None else seed + idx
             rng = np.random.default_rng(run_seed)
@@ -1701,12 +1870,10 @@ def run(config_ref: str | Path | None = None) -> None:
                 sample_weight=perm_weights,
             )
 
-            perm_test = test_data.copy()
+            perm_test = eval_test_data.copy()
             perm_test["pred"] = perm_model.predict(perm_test[FEATURES])
             if signal_direction != 1.0:
                 perm_test["pred"] = perm_test["pred"] * signal_direction
-            if eval_date_set is not None:
-                perm_test = perm_test[perm_test["trade_date"].isin(eval_date_set)]
 
             ic_values = daily_ic_series(perm_test, TARGET, "pred")
             scores.append(float(ic_values.mean()) if not ic_values.empty else np.nan)
@@ -1722,14 +1889,26 @@ def run(config_ref: str | Path | None = None) -> None:
     ) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
         if frame is None or frame.empty:
             return pd.DataFrame(columns=frame.columns if frame is not None else []), []
-        trade_dates_sorted = sorted(frame["trade_date"].unique())
+        (
+            frame_sorted,
+            trade_dates_sorted,
+            frame_date_start_rows,
+            frame_date_end_rows,
+            frame_date_to_pos,
+        ) = _build_trade_date_slices(frame)
         rebalance_dates = get_rebalance_dates(trade_dates_sorted, frequency)
         if valid_dates:
             rebalance_dates = [d for d in rebalance_dates if d in valid_dates]
         if allowed_dates is not None:
             allowed_dates_set = set(pd.to_datetime(allowed_dates))
             rebalance_dates = [d for d in rebalance_dates if d in allowed_dates_set]
-        sampled = frame[frame["trade_date"].isin(rebalance_dates)].copy()
+        sampled = _slice_trade_dates(
+            frame_sorted,
+            frame_date_start_rows,
+            frame_date_end_rows,
+            frame_date_to_pos,
+            rebalance_dates,
+        )
         return sampled, rebalance_dates
 
 
@@ -1739,8 +1918,20 @@ def run(config_ref: str | Path | None = None) -> None:
         window_id = int(window_meta["window"])
         train_dates = window_meta["train_dates"]
         test_dates = window_meta["test_dates"]
-        train_df_w = df_model[df_model["trade_date"].isin(train_dates)].copy()
-        test_df_w = df_model[df_model["trade_date"].isin(test_dates)].copy()
+        train_df_w = _slice_trade_dates(
+            df_model_sorted,
+            all_date_start_rows,
+            all_date_end_rows,
+            all_date_to_pos,
+            train_dates,
+        )
+        test_df_w = _slice_trade_dates(
+            df_model_sorted,
+            all_date_start_rows,
+            all_date_end_rows,
+            all_date_to_pos,
+            test_dates,
+        )
         result = {
             "window": window_id,
             "train_start": pd.to_datetime(window_meta["train_start"]).strftime("%Y-%m-%d"),

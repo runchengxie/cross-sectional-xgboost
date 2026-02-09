@@ -56,7 +56,17 @@ def time_series_cv_ic(
             {"type": "xgb_regressor", "params": dict(model_cfg)}
         )
 
-    dates = np.array(sorted(data["trade_date"].unique()))
+    sorted_data = data.sort_values(date_col, kind="mergesort").reset_index(drop=True)
+    date_values = sorted_data[date_col].to_numpy()
+    if date_values.size == 0:
+        return []
+
+    dates, date_start_rows = np.unique(date_values, return_index=True)
+    date_end_rows = np.empty_like(date_start_rows)
+    if len(date_start_rows) > 1:
+        date_end_rows[:-1] = date_start_rows[1:]
+    date_end_rows[-1] = len(sorted_data)
+
     tscv = TimeSeriesSplit(n_splits=n_splits)
     scores = []
     gap = max(int(embargo_days), int(purge_days))
@@ -66,10 +76,13 @@ def time_series_cv_ic(
             train_idx = train_idx[train_idx < cutoff]
             if len(train_idx) == 0:
                 continue
-        tr_dates = dates[train_idx]
-        va_dates = dates[val_idx]
-        tr_df = data[data[date_col].isin(tr_dates)]
-        va_df = data[data[date_col].isin(va_dates)].copy()
+
+        tr_start = date_start_rows[train_idx[0]]
+        tr_end = date_end_rows[train_idx[-1]]
+        va_start = date_start_rows[val_idx[0]]
+        va_end = date_end_rows[val_idx[-1]]
+        tr_df = sorted_data.iloc[tr_start:tr_end]
+        va_df = sorted_data.iloc[va_start:va_end].copy()
 
         model = build_model(resolved_type, resolved_params)
         sample_weight = build_sample_weight(tr_df, sample_weight_mode, date_col=date_col)
@@ -86,6 +99,10 @@ def time_series_cv_ic(
         if signal_direction != 1.0:
             va_df["pred"] = va_df["pred"] * signal_direction
 
-        ic_values = daily_ic_series(va_df, target_col, "pred")
+        if date_col == "trade_date":
+            ic_input = va_df
+        else:
+            ic_input = va_df.rename(columns={date_col: "trade_date"})
+        ic_values = daily_ic_series(ic_input, target_col, "pred")
         scores.append(float(ic_values.mean()) if not ic_values.empty else np.nan)
     return scores

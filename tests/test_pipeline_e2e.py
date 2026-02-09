@@ -136,11 +136,51 @@ def test_pipeline_run_offline(tmp_path, monkeypatch):
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["run"]["name"] == "e2e"
     assert summary["dataset"]["file"]
+    assert set(summary.keys()) == {
+        "run",
+        "data",
+        "dataset",
+        "universe",
+        "label",
+        "split",
+        "eval",
+        "backtest",
+        "final_oos",
+        "positions",
+        "live",
+        "fundamentals",
+        "walk_forward",
+    }
+    assert set(summary["positions"]["window_fields"].keys()) == {
+        "signal_asof",
+        "entry_date",
+        "next_entry_date",
+        "holding_window",
+    }
 
     assert (run_dir / "dataset.parquet").exists()
     assert (run_dir / "ic_test.csv").exists()
     assert (run_dir / "quantile_returns.csv").exists()
     assert (run_dir / "backtest_net.csv").exists()
+    assert (run_dir / "positions_by_rebalance.csv").exists()
+    assert (run_dir / "positions_current.csv").exists()
+
+    required_position_columns = {
+        "signal_asof",
+        "entry_date",
+        "next_entry_date",
+        "holding_window",
+        "ts_code",
+        "stock_ticker",
+        "weight",
+        "signal",
+        "rank",
+        "side",
+    }
+    positions_full = pd.read_csv(run_dir / "positions_by_rebalance.csv")
+    positions_current = pd.read_csv(run_dir / "positions_current.csv")
+    assert required_position_columns.issubset(positions_full.columns)
+    assert required_position_columns.issubset(positions_current.columns)
 
 
 @pytest.mark.integration

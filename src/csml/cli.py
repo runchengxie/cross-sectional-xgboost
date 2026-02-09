@@ -143,6 +143,39 @@ def _load_config(path: str | None) -> dict:
     return resolved.data
 
 
+def _append_arg(argv: list[str], flag: str, value, *, formatter=str) -> None:
+    if value is None:
+        return
+    if isinstance(value, str) and value == "":
+        return
+    argv.extend([flag, formatter(value)])
+
+
+def _append_repeat_args(argv: list[str], flag: str, values) -> None:
+    if not values:
+        return
+    for entry in values:
+        argv.extend([flag, str(entry)])
+
+
+def _append_bool_switch(
+    argv: list[str],
+    value: bool | None,
+    *,
+    true_flag: str,
+    false_flag: str | None = None,
+) -> None:
+    if value is True:
+        argv.append(true_flag)
+    elif value is False and false_flag is not None:
+        argv.append(false_flag)
+
+
+def _append_passthrough(argv: list[str], values) -> None:
+    if values:
+        argv.extend(list(values))
+
+
 def _init_rqdatac(args) -> object:
     try:
         import rqdatac
@@ -212,9 +245,8 @@ def _handle_universe_hk_connect(args) -> int:
     from .project_tools import build_hk_connect_universe
 
     argv: list[str] = []
-    if args.config:
-        argv += ["--config", args.config]
-    argv += list(args.args or [])
+    _append_arg(argv, "--config", args.config)
+    _append_passthrough(argv, args.args)
     build_hk_connect_universe.main(argv)
     return 0
 
@@ -237,22 +269,13 @@ def _handle_grid(args) -> int:
     from .project_tools import run_grid
 
     argv: list[str] = []
-    if getattr(args, "config", None):
-        argv += ["--config", args.config]
-    if getattr(args, "top_k", None):
-        for entry in args.top_k:
-            argv += ["--top-k", entry]
-    if getattr(args, "cost_bps", None):
-        for entry in args.cost_bps:
-            argv += ["--cost-bps", entry]
-    if getattr(args, "output", None):
-        argv += ["--output", args.output]
-    if getattr(args, "run_name_prefix", None):
-        argv += ["--run-name-prefix", args.run_name_prefix]
-    if getattr(args, "log_level", None):
-        argv += ["--log-level", args.log_level]
-    if getattr(args, "args", None):
-        argv += list(args.args)
+    _append_arg(argv, "--config", getattr(args, "config", None))
+    _append_repeat_args(argv, "--top-k", getattr(args, "top_k", None))
+    _append_repeat_args(argv, "--cost-bps", getattr(args, "cost_bps", None))
+    _append_arg(argv, "--output", getattr(args, "output", None))
+    _append_arg(argv, "--run-name-prefix", getattr(args, "run_name_prefix", None))
+    _append_arg(argv, "--log-level", getattr(args, "log_level", None))
+    _append_passthrough(argv, getattr(args, "args", None))
     run_grid.main(argv)
     return 0
 
@@ -261,58 +284,48 @@ def _handle_sweep_linear(args) -> int:
     from .project_tools import linear_sweep
 
     argv: list[str] = []
-    if getattr(args, "sweep_config", None):
-        argv += ["--sweep-config", args.sweep_config]
-    if getattr(args, "config", None):
-        argv += ["--config", args.config]
-    if getattr(args, "run_name_prefix", None):
-        argv += ["--run-name-prefix", args.run_name_prefix]
-    if getattr(args, "sweeps_dir", None):
-        argv += ["--sweeps-dir", args.sweeps_dir]
-    if getattr(args, "tag", None):
-        argv += ["--tag", args.tag]
-    if getattr(args, "runs_dir", None):
-        argv += ["--runs-dir", args.runs_dir]
-    if getattr(args, "ridge_alpha", None):
-        for entry in args.ridge_alpha:
-            argv += ["--ridge-alpha", entry]
-    if getattr(args, "elasticnet_alpha", None):
-        for entry in args.elasticnet_alpha:
-            argv += ["--elasticnet-alpha", entry]
-    if getattr(args, "elasticnet_l1_ratio", None):
-        for entry in args.elasticnet_l1_ratio:
-            argv += ["--elasticnet-l1-ratio", entry]
-    skip_ridge = getattr(args, "skip_ridge", None)
-    if skip_ridge is True:
-        argv += ["--skip-ridge"]
-    elif skip_ridge is False:
-        argv += ["--no-skip-ridge"]
-    skip_elasticnet = getattr(args, "skip_elasticnet", None)
-    if skip_elasticnet is True:
-        argv += ["--skip-elasticnet"]
-    elif skip_elasticnet is False:
-        argv += ["--no-skip-elasticnet"]
-    dry_run = getattr(args, "dry_run", None)
-    if dry_run is True:
-        argv += ["--dry-run"]
-    elif dry_run is False:
-        argv += ["--no-dry-run"]
-    continue_on_error = getattr(args, "continue_on_error", None)
-    if continue_on_error is True:
-        argv += ["--continue-on-error"]
-    elif continue_on_error is False:
-        argv += ["--no-continue-on-error"]
-    skip_summarize = getattr(args, "skip_summarize", None)
-    if skip_summarize is True:
-        argv += ["--skip-summarize"]
-    elif skip_summarize is False:
-        argv += ["--no-skip-summarize"]
-    if getattr(args, "summary_output", None):
-        argv += ["--summary-output", args.summary_output]
-    if getattr(args, "log_level", None):
-        argv += ["--log-level", args.log_level]
-    if getattr(args, "args", None):
-        argv += list(args.args)
+    _append_arg(argv, "--sweep-config", getattr(args, "sweep_config", None))
+    _append_arg(argv, "--config", getattr(args, "config", None))
+    _append_arg(argv, "--run-name-prefix", getattr(args, "run_name_prefix", None))
+    _append_arg(argv, "--sweeps-dir", getattr(args, "sweeps_dir", None))
+    _append_arg(argv, "--tag", getattr(args, "tag", None))
+    _append_arg(argv, "--runs-dir", getattr(args, "runs_dir", None))
+    _append_repeat_args(argv, "--ridge-alpha", getattr(args, "ridge_alpha", None))
+    _append_repeat_args(argv, "--elasticnet-alpha", getattr(args, "elasticnet_alpha", None))
+    _append_repeat_args(argv, "--elasticnet-l1-ratio", getattr(args, "elasticnet_l1_ratio", None))
+    _append_bool_switch(
+        argv,
+        getattr(args, "skip_ridge", None),
+        true_flag="--skip-ridge",
+        false_flag="--no-skip-ridge",
+    )
+    _append_bool_switch(
+        argv,
+        getattr(args, "skip_elasticnet", None),
+        true_flag="--skip-elasticnet",
+        false_flag="--no-skip-elasticnet",
+    )
+    _append_bool_switch(
+        argv,
+        getattr(args, "dry_run", None),
+        true_flag="--dry-run",
+        false_flag="--no-dry-run",
+    )
+    _append_bool_switch(
+        argv,
+        getattr(args, "continue_on_error", None),
+        true_flag="--continue-on-error",
+        false_flag="--no-continue-on-error",
+    )
+    _append_bool_switch(
+        argv,
+        getattr(args, "skip_summarize", None),
+        true_flag="--skip-summarize",
+        false_flag="--no-skip-summarize",
+    )
+    _append_arg(argv, "--summary-output", getattr(args, "summary_output", None))
+    _append_arg(argv, "--log-level", getattr(args, "log_level", None))
+    _append_passthrough(argv, getattr(args, "args", None))
     linear_sweep.main(argv)
     return 0
 
@@ -328,20 +341,13 @@ def _handle_holdings(args) -> int:
     from .project_tools import holdings
 
     argv: list[str] = []
-    if getattr(args, "config", None):
-        argv += ["--config", args.config]
-    if getattr(args, "run_dir", None):
-        argv += ["--run-dir", args.run_dir]
-    if getattr(args, "top_k", None) is not None:
-        argv += ["--top-k", str(args.top_k)]
-    if getattr(args, "as_of", None):
-        argv += ["--as-of", args.as_of]
-    if getattr(args, "source", None):
-        argv += ["--source", args.source]
-    if getattr(args, "format", None):
-        argv += ["--format", args.format]
-    if getattr(args, "out", None):
-        argv += ["--out", args.out]
+    _append_arg(argv, "--config", getattr(args, "config", None))
+    _append_arg(argv, "--run-dir", getattr(args, "run_dir", None))
+    _append_arg(argv, "--top-k", getattr(args, "top_k", None), formatter=str)
+    _append_arg(argv, "--as-of", getattr(args, "as_of", None))
+    _append_arg(argv, "--source", getattr(args, "source", None))
+    _append_arg(argv, "--format", getattr(args, "format", None))
+    _append_arg(argv, "--out", getattr(args, "out", None))
     holdings.main(argv)
     return 0
 
@@ -350,20 +356,13 @@ def _handle_snapshot(args) -> int:
     from .project_tools import snapshot
 
     argv: list[str] = []
-    if getattr(args, "config", None):
-        argv += ["--config", args.config]
-    if getattr(args, "run_dir", None):
-        argv += ["--run-dir", args.run_dir]
-    if getattr(args, "as_of", None):
-        argv += ["--as-of", args.as_of]
-    if getattr(args, "skip_run", None):
-        argv += ["--skip-run"]
-    if getattr(args, "top_k", None) is not None:
-        argv += ["--top-k", str(args.top_k)]
-    if getattr(args, "format", None):
-        argv += ["--format", args.format]
-    if getattr(args, "out", None):
-        argv += ["--out", args.out]
+    _append_arg(argv, "--config", getattr(args, "config", None))
+    _append_arg(argv, "--run-dir", getattr(args, "run_dir", None))
+    _append_arg(argv, "--as-of", getattr(args, "as_of", None))
+    _append_bool_switch(argv, getattr(args, "skip_run", None), true_flag="--skip-run")
+    _append_arg(argv, "--top-k", getattr(args, "top_k", None), formatter=str)
+    _append_arg(argv, "--format", getattr(args, "format", None))
+    _append_arg(argv, "--out", getattr(args, "out", None))
     snapshot.main(argv)
     return 0
 
@@ -372,38 +371,27 @@ def _handle_alloc(args) -> int:
     from .project_tools import alloc
 
     argv: list[str] = []
-    if getattr(args, "config", None):
-        argv += ["--config", args.config]
-    if getattr(args, "run_dir", None):
-        argv += ["--run-dir", args.run_dir]
-    if getattr(args, "positions_file", None):
-        argv += ["--positions-file", args.positions_file]
-    if getattr(args, "top_k", None) is not None:
-        argv += ["--top-k", str(args.top_k)]
-    if getattr(args, "as_of", None):
-        argv += ["--as-of", args.as_of]
-    if getattr(args, "source", None):
-        argv += ["--source", args.source]
-    if getattr(args, "side", None):
-        argv += ["--side", args.side]
-    if getattr(args, "top_n", None) is not None:
-        argv += ["--top-n", str(args.top_n)]
-    if getattr(args, "cash", None) is not None:
-        argv += ["--cash", str(args.cash)]
-    if getattr(args, "buffer_bps", None) is not None:
-        argv += ["--buffer-bps", str(args.buffer_bps)]
-    if getattr(args, "price_field", None):
-        argv += ["--price-field", args.price_field]
-    if getattr(args, "price_lookback_days", None) is not None:
-        argv += ["--price-lookback-days", str(args.price_lookback_days)]
-    if getattr(args, "username", None):
-        argv += ["--username", args.username]
-    if getattr(args, "password", None):
-        argv += ["--password", args.password]
-    if getattr(args, "format", None):
-        argv += ["--format", args.format]
-    if getattr(args, "out", None):
-        argv += ["--out", args.out]
+    _append_arg(argv, "--config", getattr(args, "config", None))
+    _append_arg(argv, "--run-dir", getattr(args, "run_dir", None))
+    _append_arg(argv, "--positions-file", getattr(args, "positions_file", None))
+    _append_arg(argv, "--top-k", getattr(args, "top_k", None), formatter=str)
+    _append_arg(argv, "--as-of", getattr(args, "as_of", None))
+    _append_arg(argv, "--source", getattr(args, "source", None))
+    _append_arg(argv, "--side", getattr(args, "side", None))
+    _append_arg(argv, "--top-n", getattr(args, "top_n", None), formatter=str)
+    _append_arg(argv, "--cash", getattr(args, "cash", None), formatter=str)
+    _append_arg(argv, "--buffer-bps", getattr(args, "buffer_bps", None), formatter=str)
+    _append_arg(argv, "--price-field", getattr(args, "price_field", None))
+    _append_arg(
+        argv,
+        "--price-lookback-days",
+        getattr(args, "price_lookback_days", None),
+        formatter=str,
+    )
+    _append_arg(argv, "--username", getattr(args, "username", None))
+    _append_arg(argv, "--password", getattr(args, "password", None))
+    _append_arg(argv, "--format", getattr(args, "format", None))
+    _append_arg(argv, "--out", getattr(args, "out", None))
     alloc.main(argv)
     return 0
 

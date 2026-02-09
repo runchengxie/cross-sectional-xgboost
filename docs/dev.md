@@ -29,14 +29,6 @@ csml run --config config/default.yml
 
 调试时建议先用较短日期区间，确认流程可跑通后再放大样本窗口。
 
-## 维护脚本
-
-仓库包含一个缓存迁移工具（将 range/window 日线缓存合并为 symbol 缓存）：
-
-```bash
-uv run python -m csml.project_tools.migrate_daily_cache --help
-```
-
 ## 测试
 
 项目使用 `pytest`，默认参数见 `pyproject.toml`（含 `--cov=csml`）。
@@ -53,6 +45,9 @@ uv run pytest tests/test_metrics.py
 
 # 跑集成测试
 uv run pytest -m integration
+
+# 真实 provider 集成测试（需显式启用 + 配置对应 token/账号）
+CSML_RUN_PROVIDER_INTEGRATION=1 uv run pytest tests/test_provider_integration.py -m integration
 ```
 
 ## 测试分层约定
