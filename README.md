@@ -1,4 +1,4 @@
-# cross-sectional-xgboost
+# cross-sectional-machine-learning
 
 使用 TuShare / RQData / EODHD 日线数据与可切换模型（`xgb_regressor/xgb_ranker/ridge/elasticnet`）进行截面因子研究与评估（支持 A/HK/US 多市场配置切换）。流程包含特征工程、时间序列切分、IC 评估、分位数组合收益、换手率估计与特征重要性输出。
 

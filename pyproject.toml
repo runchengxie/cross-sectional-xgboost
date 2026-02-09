@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cross-sectional-xgboost"
+name = "cross-sectional-machine-learning"
 version = "0.1.0"
 description = "Cross-sectional factor mining with pluggable machine learning models"
 readme = "README.md"

@@ -1,4 +1,4 @@
-# cross-sectional-xgboost 评估指标说明书
+# cross-sectional-machine-learning 评估指标说明书
 
 ## 0. 这个项目在干什么（用一句话讲清楚）
 

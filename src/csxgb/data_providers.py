@@ -289,7 +289,9 @@ def _resolve_eodhd_config(data_cfg: Mapping, client) -> dict:
 
 
 def _eodhd_request_text(url: str, timeout: float) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "cross-sectional-xgboost/0.1"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "cross-sectional-machine-learning/0.1"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = resp.read().decode("utf-8")
