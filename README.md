@@ -114,8 +114,8 @@ data:
 
 ### 2) `csml grid`
 
-* 作用：做 Top-K × 交易成本(bps) 的敏感性网格。它会先跑一次 base pipeline 产出 `eval_scored.parquet`，再在同一份 scored 数据上循环组合并汇总到 CSV（不会为每个网格点重训模型）。
-* 常用参数（脚本侧定义的）：`--top-k`（可多次传、逗号分隔）、`--cost-bps`、`--output`（默认 `out/runs/grid_summary.csv`）、`--run-name-prefix`、`--log-level`。
+* 作用：做 Top-K × 交易成本(bps) × buffer 的敏感性网格。它会先跑一次 base pipeline 产出 `eval_scored.parquet`，再在同一份 scored 数据上循环组合并汇总到 CSV（不会为每个网格点重训模型）。
+* 常用参数（脚本侧定义的）：`--top-k`（可多次传、逗号分隔）、`--cost-bps`、`--buffer-exit`、`--buffer-entry`、`--output`（默认 `out/runs/grid_summary.csv`）、`--run-name-prefix`、`--log-level`。
 
 ### `csml sweep-linear`
 
@@ -212,7 +212,8 @@ data:
 * 默认扫描：`out/runs`（递归）。
 * 常用参数：`--runs-dir`（可重复传多个目录）、`--output`（默认 `<runs-dir>/runs_summary.csv`）。
 * 筛选参数：`--run-name-prefix`（按 run_name 前缀过滤，可重复传）、`--since`（只保留该时点之后的 run）、`--latest-n`（过滤后只保留最新 N 条）。
-* 额外筛选列：会自动生成 `flag_short_sample`、`flag_negative_long_short`、`flag_high_turnover` 和 `score`，便于快速筛选异常/候选 run。
+* 额外筛选列：会自动生成 `flag_short_sample`、`flag_negative_long_short`、`flag_high_turnover`、`flag_relative_end_date` 和 `score`，便于快速筛选异常/候选 run。
+* 支持直接过滤 flags：`--exclude-flag-short-sample`、`--exclude-flag-high-turnover`、`--exclude-flag-relative-end-date`，并可 `--sort-by score`。
 * 完整参数清单见 `docs/cli.md`。
 
 常用指令：
@@ -224,8 +225,8 @@ csml run --config hk
 # 或指定配置文件
 csml run --config config/hk_selected__baseline.yml
 
-# Top-K × 成本敏感性网格（使用显式模型配置）
-csml grid --config config/hk_selected__xgb_regressor.yml
+# Top-K × 成本 × buffer 敏感性网格（使用显式模型配置）
+csml grid --config config/hk_selected__xgb_regressor.yml --top-k 10,20 --cost-bps 15,25,40 --buffer-exit 8,10 --buffer-entry 4,5
 
 # 线性模型 sweep（推荐配置文件驱动）
 csml sweep-linear --sweep-config config/sweeps/hk_selected__linear_a.yml
@@ -238,6 +239,9 @@ csml summarize --runs-dir out/runs --output out/runs/runs_summary.csv
 
 # 只看最近一次 grid 相关汇总（示例）
 csml summarize --runs-dir out/runs --run-name-prefix hk_grid --latest-n 1
+
+# 先过滤短样本/高换手，再按 score 看候选
+csml summarize --runs-dir out/runs --exclude-flag-short-sample --exclude-flag-high-turnover --exclude-flag-relative-end-date --sort-by score
 
 # 当期持仓清单（从最近一次 run 读取）
 csml holdings --config config/hk.yml --as-of t-1

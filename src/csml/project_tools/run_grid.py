@@ -47,9 +47,20 @@ def _parse_float_list(values: list[str]) -> list[float]:
     return items
 
 
-def _safe_run_name(base: str, top_k: int, cost_bps: float) -> str:
+def _safe_run_name(
+    base: str,
+    top_k: int,
+    cost_bps: float,
+    *,
+    buffer_exit: int,
+    buffer_entry: int,
+    include_buffer: bool,
+) -> str:
     cost_text = ("%g" % cost_bps).replace(".", "p")
-    return f"{base}_k{top_k}_bps{cost_text}"
+    run_name = f"{base}_k{top_k}_bps{cost_text}"
+    if include_buffer:
+        run_name = f"{run_name}_bx{int(buffer_exit)}_be{int(buffer_entry)}"
+    return run_name
 
 
 def _find_latest_summary(output_dir: Path, run_name: str) -> Path | None:
@@ -116,11 +127,20 @@ def _resolve_rebalance_dates(
     return rebalance_dates
 
 
-def _init_row(top_k: int, cost_bps: float, run_name: str, summary_path: Path | None) -> dict:
+def _init_row(
+    top_k: int,
+    cost_bps: float,
+    buffer_exit: int,
+    buffer_entry: int,
+    run_name: str,
+    summary_path: Path | None,
+) -> dict:
     return {
         "run_name": run_name,
         "top_k": top_k,
         "cost_bps": cost_bps,
+        "buffer_exit": int(buffer_exit),
+        "buffer_entry": int(buffer_entry),
         "summary_path": str(summary_path) if summary_path else None,
         "output_dir": None,
         "label_horizon_days": None,
@@ -160,6 +180,18 @@ def add_grid_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Comma-separated cost bps per side (default: 15,25,40)",
     )
     parser.add_argument(
+        "--buffer-exit",
+        action="append",
+        default=None,
+        help="Comma-separated buffer_exit values (default: use config value)",
+    )
+    parser.add_argument(
+        "--buffer-entry",
+        action="append",
+        default=None,
+        help="Comma-separated buffer_entry values (default: use config value)",
+    )
+    parser.add_argument(
         "--output",
         default="out/runs/grid_summary.csv",
         help="Output CSV path (default: out/runs/grid_summary.csv)",
@@ -192,13 +224,40 @@ def main(argv: list[str] | None = None) -> None:
     base_cfg = resolved.data
     base_label = args.run_name_prefix or resolved.label
 
+    base_eval_cfg = base_cfg.get("eval", {}) if isinstance(base_cfg.get("eval"), dict) else {}
+    base_backtest_cfg = (
+        base_cfg.get("backtest", {}) if isinstance(base_cfg.get("backtest"), dict) else {}
+    )
+    default_buffer_exit = int(
+        base_eval_cfg.get("buffer_exit", base_backtest_cfg.get("buffer_exit", 0))
+    )
+    default_buffer_entry = int(
+        base_eval_cfg.get("buffer_entry", base_backtest_cfg.get("buffer_entry", 0))
+    )
+
     top_k_entries = args.top_k or ["5,10,20"]
     cost_entries = args.cost_bps or ["15,25,40"]
+    buffer_exit_entries = args.buffer_exit or [str(default_buffer_exit)]
+    buffer_entry_entries = args.buffer_entry or [str(default_buffer_entry)]
     top_k_values = list(dict.fromkeys(_parse_int_list(top_k_entries)))
     cost_values = list(dict.fromkeys(_parse_float_list(cost_entries)))
-    combos = [(top_k, cost) for top_k in top_k_values for cost in cost_values]
+    buffer_exit_values = list(dict.fromkeys(_parse_int_list(buffer_exit_entries)))
+    buffer_entry_values = list(dict.fromkeys(_parse_int_list(buffer_entry_entries)))
+    if any(value < 0 for value in buffer_exit_values):
+        raise SystemExit("--buffer-exit values must be >= 0.")
+    if any(value < 0 for value in buffer_entry_values):
+        raise SystemExit("--buffer-entry values must be >= 0.")
+
+    combos = [
+        (top_k, cost, buffer_exit, buffer_entry)
+        for top_k in top_k_values
+        for cost in cost_values
+        for buffer_exit in buffer_exit_values
+        for buffer_entry in buffer_entry_values
+    ]
     if not combos:
         raise SystemExit("No valid parameter combinations.")
+    include_buffer_in_name = len(buffer_exit_values) > 1 or len(buffer_entry_values) > 1
 
     output_path = _resolve_output_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +272,10 @@ def main(argv: list[str] | None = None) -> None:
     base_run_cfg["backtest"]["top_k"] = int(top_k_values[0])
     base_run_cfg["eval"]["transaction_cost_bps"] = float(cost_values[0])
     base_run_cfg["backtest"]["transaction_cost_bps"] = float(cost_values[0])
+    base_run_cfg["eval"]["buffer_exit"] = int(buffer_exit_values[0])
+    base_run_cfg["eval"]["buffer_entry"] = int(buffer_entry_values[0])
+    base_run_cfg["backtest"]["buffer_exit"] = int(buffer_exit_values[0])
+    base_run_cfg["backtest"]["buffer_entry"] = int(buffer_entry_values[0])
 
     from .. import pipeline
 
@@ -293,8 +356,6 @@ def main(argv: list[str] | None = None) -> None:
     label_cfg = base_run_cfg.get("label", {}) if isinstance(base_run_cfg.get("label"), dict) else {}
 
     n_quantiles = int(eval_cfg.get("n_quantiles", 5))
-    eval_buffer_exit = int(eval_cfg.get("buffer_exit", backtest_cfg.get("buffer_exit", 0)))
-    eval_buffer_entry = int(eval_cfg.get("buffer_entry", backtest_cfg.get("buffer_entry", 0)))
 
     backtest_enabled = bool(backtest_cfg.get("enabled", True))
     backtest_long_only = bool(backtest_cfg.get("long_only", True))
@@ -314,8 +375,6 @@ def main(argv: list[str] | None = None) -> None:
         backtest_exit_horizon_days = label_cfg.get("horizon_days")
     if backtest_exit_horizon_days is not None:
         backtest_exit_horizon_days = int(backtest_exit_horizon_days)
-    backtest_buffer_exit = int(backtest_cfg.get("buffer_exit", 0))
-    backtest_buffer_entry = int(backtest_cfg.get("buffer_entry", 0))
     backtest_exit_price_policy = str(
         _get_nested(summary, "backtest", "exit_price_policy")
         or backtest_cfg.get("exit_price_policy", "strict")
@@ -332,9 +391,23 @@ def main(argv: list[str] | None = None) -> None:
         tradable_col = None
 
     rows: list[dict] = []
-    for top_k, cost_bps in combos:
-        run_name = _safe_run_name(base_label, top_k, cost_bps)
-        row = _init_row(top_k, cost_bps, run_name, summary_path)
+    for top_k, cost_bps, buffer_exit, buffer_entry in combos:
+        run_name = _safe_run_name(
+            base_label,
+            top_k,
+            cost_bps,
+            buffer_exit=buffer_exit,
+            buffer_entry=buffer_entry,
+            include_buffer=include_buffer_in_name,
+        )
+        row = _init_row(
+            top_k,
+            cost_bps,
+            buffer_exit,
+            buffer_entry,
+            run_name,
+            summary_path,
+        )
         row["output_dir"] = _get_nested(summary, "run", "output_dir")
         row["label_horizon_days"] = _get_nested(summary, "label", "horizon_days")
         try:
@@ -358,8 +431,8 @@ def main(argv: list[str] | None = None) -> None:
                     eval_signal_col,
                     k,
                     eval_rebalance_dates,
-                    buffer_exit=eval_buffer_exit,
-                    buffer_entry=eval_buffer_entry,
+                    buffer_exit=int(buffer_exit),
+                    buffer_entry=int(buffer_entry),
                 )
                 row["eval_turnover_mean"] = float(turnover.mean()) if not turnover.empty else None
 
@@ -377,8 +450,8 @@ def main(argv: list[str] | None = None) -> None:
                     exit_horizon_days=backtest_exit_horizon_days,
                     long_only=backtest_long_only,
                     short_k=backtest_short_k,
-                    buffer_exit=backtest_buffer_exit,
-                    buffer_entry=backtest_buffer_entry,
+                    buffer_exit=int(buffer_exit),
+                    buffer_entry=int(buffer_entry),
                     tradable_col=tradable_col,
                     exit_price_policy=backtest_exit_price_policy,
                     exit_fallback_policy=backtest_exit_fallback_policy,
@@ -406,6 +479,8 @@ def main(argv: list[str] | None = None) -> None:
         "run_name",
         "top_k",
         "cost_bps",
+        "buffer_exit",
+        "buffer_entry",
         "summary_path",
         "output_dir",
         "label_horizon_days",

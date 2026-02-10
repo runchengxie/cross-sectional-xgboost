@@ -49,6 +49,17 @@ csml rqdata quota --pretty
 1. `summary.json -> universe`
 1. `out/runs/<run_dir>/dropped_dates.csv`（若有）
 
+快速筛掉明显不可靠的 run：
+
+```bash
+csml summarize \
+  --runs-dir out/runs \
+  --exclude-flag-short-sample \
+  --exclude-flag-high-turnover \
+  --exclude-flag-relative-end-date \
+  --sort-by score
+```
+
 ## 4. “当月持仓”与预期不一致
 
 典型原因：`shift_days=1` 时，月末信号会在下一交易日入场，`positions_current.csv` 可能仍显示上期组合。

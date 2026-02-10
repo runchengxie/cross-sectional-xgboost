@@ -20,6 +20,25 @@
 
 每次运行后优先看 `config.used.yml`，它是“本次 run 实际生效配置”。
 
+## 0.5) 先过“能不能信”的门槛
+
+建议先做这三个检查，再看夏普：
+
+1. 样本长度：`backtest_periods >= 24`（`summarize` 默认短样本阈值就是 24）。
+1. 交易可实现性：`backtest_avg_turnover <= 0.7`（默认高换手阈值 0.7）。
+1. 数据稳定性：`data.end_date` 优先固定绝对日期，避免 `today/t-1` 引入复现漂移。
+
+可直接用下面命令筛出“先过门槛”的 run：
+
+```bash
+csml summarize \
+  --runs-dir out/runs \
+  --exclude-flag-short-sample \
+  --exclude-flag-high-turnover \
+  --exclude-flag-relative-end-date \
+  --sort-by score
+```
+
 ## 1) 先跑线性基线（Ridge / ElasticNet）
 
 `ridge` / `elasticnet` 常用来做稳定基线：参数少、共线性鲁棒、复现成本低。
@@ -92,14 +111,19 @@ csml summarize \
 1. 收益提升但换手飙升：先调 `buffer_exit/buffer_entry` 或降低模型复杂度。
 1. `long_short` 经常翻向：多见于弱信号或噪声主导，需回看标签与特征对齐。
 
-## 5) 可选：`csml grid` 只做 Top-K/成本敏感性
+## 5) 可选：`csml grid` 做 Top-K/成本/buffer 形状分析
 
-`csml grid` 不是模型超参网格搜索。它会先基于给定配置跑一次 base pipeline，读取 `eval_scored.parquet`，然后在同一份 scored 数据上循环 `Top-K × cost_bps` 组合，不会为每个网格点重训模型。
+`csml grid` 不是模型超参网格搜索。它会先基于给定配置跑一次 base pipeline，读取 `eval_scored.parquet`，然后在同一份 scored 数据上循环 `Top-K × cost_bps × buffer_exit × buffer_entry` 组合，不会为每个网格点重训模型。
 
 示例：
 
 ```bash
-csml grid --config config/hk_selected__ridge_a1.yml --top-k 5,10,20 --cost-bps 10,25,40
+csml grid \
+  --config config/hk_selected__ridge_a1.yml \
+  --top-k 5,10,20 \
+  --cost-bps 10,25,40 \
+  --buffer-exit 8,10 \
+  --buffer-entry 4,5
 ```
 
 ## 6) 最小可执行清单

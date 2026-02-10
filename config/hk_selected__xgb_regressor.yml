@@ -122,7 +122,7 @@ model:
     random_state: 42
   sample_weight_mode: date_equal
 eval:
-  test_size: 0.2
+  test_size: 0.6
   n_splits: 5
   n_quantiles: 5
   rebalance_frequency: M
@@ -131,8 +131,8 @@ eval:
   signal_direction_mode: cv_ic
   min_abs_ic_to_flip: 0.002
   transaction_cost_bps: 25
-  buffer_exit: 6
-  buffer_entry: 3
+  buffer_exit: 10
+  buffer_entry: 5
   sample_on_rebalance_dates: false
   embargo_days: 20
   purge_days: 20
@@ -142,19 +142,19 @@ eval:
   output_dir: out/runs
   run_name: hk_sel_xgb_reg_default
   permutation_test:
-    enabled: false
-    n_runs: 3
+    enabled: true
+    n_runs: 10
     seed: 42
   walk_forward:
     enabled: true
-    n_windows: 3
+    n_windows: 4
     test_size: null
     step_size: null
     anchor_end: true
     backtest_enabled: true
     permutation_test:
-      enabled: false
-      n_runs: 3
+      enabled: true
+      n_runs: 10
       seed: 42
   final_oos:
     enabled: false
@@ -170,7 +170,7 @@ backtest:
   benchmark_symbol: 02800.HK
   exit_mode: rebalance
   exit_horizon_days: null
-  buffer_exit: 6
-  buffer_entry: 3
+  buffer_exit: 10
+  buffer_entry: 5
   exit_price_policy: delay
   exit_fallback_policy: ffill

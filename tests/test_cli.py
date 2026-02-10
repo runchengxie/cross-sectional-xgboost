@@ -34,10 +34,26 @@ def test_cli_parses_holdings_snapshot_grid_summarize_alloc():
     assert snapshot.command == "snapshot"
     assert snapshot.skip_run is True
 
-    grid = parser.parse_args(["grid", "--config", "default", "--top-k", "5,10", "--cost-bps", "10,20"])
+    grid = parser.parse_args(
+        [
+            "grid",
+            "--config",
+            "default",
+            "--top-k",
+            "5,10",
+            "--cost-bps",
+            "10,20",
+            "--buffer-exit",
+            "6",
+            "--buffer-entry",
+            "3",
+        ]
+    )
     assert grid.command == "grid"
     assert grid.top_k == ["5,10"]
     assert grid.cost_bps == ["10,20"]
+    assert grid.buffer_exit == ["6"]
+    assert grid.buffer_entry == ["3"]
 
     sweep = parser.parse_args(
         [
@@ -202,6 +218,8 @@ def test_cli_handle_grid_passes_through_args(monkeypatch):
         config="hk",
         top_k=["5,10", "20"],
         cost_bps=["15,25"],
+        buffer_exit=["6,8"],
+        buffer_entry=["3"],
         output="out/runs/grid.csv",
         run_name_prefix="hk_grid",
         log_level="DEBUG",
@@ -218,6 +236,10 @@ def test_cli_handle_grid_passes_through_args(monkeypatch):
             "20",
             "--cost-bps",
             "15,25",
+            "--buffer-exit",
+            "6,8",
+            "--buffer-entry",
+            "3",
             "--output",
             "out/runs/grid.csv",
             "--run-name-prefix",

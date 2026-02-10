@@ -26,13 +26,15 @@ csml run --config hk
 
 ## 2) `csml grid`
 
-用途：Top-K × 交易成本敏感性网格，并输出 `grid_summary.csv`。该命令先跑一次 base run，再复用其 `eval_scored.parquet` 循环 Top-K/成本组合，不会为每个网格点重训模型。
+用途：Top-K × 交易成本 × buffer（`buffer_exit/buffer_entry`）敏感性网格，并输出 `grid_summary.csv`。该命令先跑一次 base run，再复用其 `eval_scored.parquet` 循环参数组合，不会为每个网格点重训模型。
 
 参数：
 
 * `--config <path_or_alias>`：基础配置（默认 `config/hk.yml`）。
 * `--top-k <values>`：可重复传，支持逗号分隔（默认 `5,10,20`）。
 * `--cost-bps <values>`：可重复传，支持逗号分隔（默认 `15,25,40`）。
+* `--buffer-exit <values>`：可重复传，支持逗号分隔（默认取配置里的 `buffer_exit`）。
+* `--buffer-entry <values>`：可重复传，支持逗号分隔（默认取配置里的 `buffer_entry`）。
 * `--output <csv_path>`：输出 CSV（默认 `out/runs/grid_summary.csv`）。
 * `--run-name-prefix <prefix>`：run_name 前缀。
 * `--log-level <level>`：日志级别（`CRITICAL/ERROR/WARNING/INFO/DEBUG`）。
@@ -41,6 +43,14 @@ csml run --config hk
 
 ```bash
 csml grid --config config/hk.yml --top-k 5,10 --cost-bps 15,25
+
+# 同时扫 buffer（交易层三件套：Top-K × 成本 × buffer）
+csml grid \
+  --config config/hk_selected__baseline.yml \
+  --top-k 10,20 \
+  --cost-bps 15,25,40 \
+  --buffer-exit 8,10 \
+  --buffer-entry 4,5
 ```
 
 ## 3) `csml sweep-linear`
@@ -95,6 +105,11 @@ csml sweep-linear \
 * `--high-turnover-threshold <float>`：`flag_high_turnover` 阈值（默认 `0.7`）。
 * `--score-drawdown-weight <float>`：`score` 中回撤惩罚权重（默认 `0.5`）。
 * `--score-cost-weight <float>`：`score` 中成本惩罚权重（默认 `10.0`）。
+* `--exclude-flag-short-sample`：过滤掉 `flag_short_sample=true`。
+* `--exclude-flag-high-turnover`：过滤掉 `flag_high_turnover=true`。
+* `--exclude-flag-negative-long-short`：过滤掉 `flag_negative_long_short=true`。
+* `--exclude-flag-relative-end-date`：过滤掉配置里 `data.end_date` 仍是相对日期 token（如 `today/t-1`）的 run。
+* `--sort-by <timestamp|score>`：按时间或按 `score` 排序（默认 `timestamp`）。
 * `--log-level <level>`：日志级别（`CRITICAL/ERROR/WARNING/INFO/DEBUG`）。
 
 示例：
@@ -108,6 +123,14 @@ csml summarize --runs-dir out/runs --run-name-prefix hk_grid --latest-n 1
 
 # 仅看 2026-02-01 之后的数据
 csml summarize --runs-dir out/runs --since 2026-02-01
+
+# 先过滤短样本/高换手，再按 score 看候选
+csml summarize \
+  --runs-dir out/runs \
+  --exclude-flag-short-sample \
+  --exclude-flag-high-turnover \
+  --exclude-flag-relative-end-date \
+  --sort-by score
 ```
 
 ## 5) `csml holdings`

@@ -272,6 +272,8 @@ def _handle_grid(args) -> int:
     _append_arg(argv, "--config", getattr(args, "config", None))
     _append_repeat_args(argv, "--top-k", getattr(args, "top_k", None))
     _append_repeat_args(argv, "--cost-bps", getattr(args, "cost_bps", None))
+    _append_repeat_args(argv, "--buffer-exit", getattr(args, "buffer_exit", None))
+    _append_repeat_args(argv, "--buffer-entry", getattr(args, "buffer_entry", None))
     _append_arg(argv, "--output", getattr(args, "output", None))
     _append_arg(argv, "--run-name-prefix", getattr(args, "run_name_prefix", None))
     _append_arg(argv, "--log-level", getattr(args, "log_level", None))

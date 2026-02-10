@@ -71,6 +71,11 @@ def _normalize_date_token(value: object | None, default: str) -> str:
     return text
 
 
+def _is_relative_date_token(value: object | None, default: str = "today") -> bool:
+    token = _normalize_date_token(value, default=default)
+    return token in {"today", "t-1", "last_trading_day", "last_completed_trading_day"}
+
+
 def _resolve_last_trading_date(
     as_of: pd.Timestamp,
     market: str,
@@ -921,6 +926,11 @@ def run(config_ref: str | Path | None = None) -> None:
         sys.exit("No symbols configured.")
 
     end_date_cfg = data_cfg.get("end_date", "today")
+    if _is_relative_date_token(end_date_cfg) and not bool(live_cfg.get("enabled", False)):
+        logger.warning(
+            "data.end_date=%s is a relative token; prefer a fixed YYYYMMDD date for reproducibility.",
+            end_date_cfg,
+        )
     end_date = _resolve_date_token(end_date_cfg, default="today", market=MARKET, provider=provider)
 
     start_date_cfg = data_cfg.get("start_date")

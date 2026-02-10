@@ -36,6 +36,12 @@ FIELDNAMES = [
     "data_provider",
     "data_start_date",
     "data_end_date",
+    "data_end_date_config",
+    "data_rows",
+    "data_rows_model",
+    "data_rows_model_in_sample",
+    "data_rows_model_oos",
+    "data_dropped_dates",
     "universe_mode",
     "label_horizon_days",
     "label_shift_days",
@@ -63,10 +69,21 @@ FIELDNAMES = [
     "flag_short_sample",
     "flag_negative_long_short",
     "flag_high_turnover",
+    "flag_relative_end_date",
     "score",
     "status",
     "error",
 ]
+
+RELATIVE_END_DATE_TOKENS = {
+    "today",
+    "now",
+    "t",
+    "t-1",
+    "yesterday",
+    "last_trading_day",
+    "last_completed_trading_day",
+}
 
 
 def _resolve_path(path_text: str | Path) -> Path:
@@ -100,6 +117,26 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_true_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _is_relative_end_date(value: Any) -> bool | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return text in RELATIVE_END_DATE_TOKENS
 
 
 def _parse_datetime_text(value: str) -> datetime | None:
@@ -224,6 +261,14 @@ def _apply_flags_and_score(row: dict[str, Any], args: argparse.Namespace) -> Non
     if bt_turnover is not None:
         row["flag_high_turnover"] = bt_turnover > float(args.high_turnover_threshold)
 
+    end_date_source = _first_non_empty(
+        row.get("data_end_date_config"),
+        row.get("data_end_date"),
+    )
+    end_date_relative = _is_relative_end_date(end_date_source)
+    if end_date_relative is not None:
+        row["flag_relative_end_date"] = end_date_relative
+
     sharpe = _to_float(row.get("backtest_sharpe"))
     if sharpe is None:
         return
@@ -279,10 +324,16 @@ def _extract_row(source_runs_dir: Path, summary_path: Path, args: argparse.Names
         _get_nested(summary, "data", "start_date"),
         _get_nested(config, "data", "start_date"),
     )
+    row["data_end_date_config"] = _get_nested(config, "data", "end_date")
     row["data_end_date"] = _first_non_empty(
         _get_nested(summary, "data", "end_date"),
-        _get_nested(config, "data", "end_date"),
+        row["data_end_date_config"],
     )
+    row["data_rows"] = _get_nested(summary, "data", "rows")
+    row["data_rows_model"] = _get_nested(summary, "data", "rows_model")
+    row["data_rows_model_in_sample"] = _get_nested(summary, "data", "rows_model_in_sample")
+    row["data_rows_model_oos"] = _get_nested(summary, "data", "rows_model_oos")
+    row["data_dropped_dates"] = _get_nested(summary, "data", "dropped_dates")
     row["universe_mode"] = _first_non_empty(
         _get_nested(summary, "universe", "mode"),
         _get_nested(config, "universe", "mode"),
@@ -433,6 +484,32 @@ def add_summarize_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="Score penalty weight for avg_cost_drag (default: 10.0)",
     )
     parser.add_argument(
+        "--exclude-flag-short-sample",
+        action="store_true",
+        help="Exclude rows where flag_short_sample=true",
+    )
+    parser.add_argument(
+        "--exclude-flag-high-turnover",
+        action="store_true",
+        help="Exclude rows where flag_high_turnover=true",
+    )
+    parser.add_argument(
+        "--exclude-flag-negative-long-short",
+        action="store_true",
+        help="Exclude rows where flag_negative_long_short=true",
+    )
+    parser.add_argument(
+        "--exclude-flag-relative-end-date",
+        action="store_true",
+        help="Exclude rows where data.end_date uses relative tokens such as today/t-1",
+    )
+    parser.add_argument(
+        "--sort-by",
+        default="timestamp",
+        choices=["timestamp", "score"],
+        help="Sort rows by run timestamp or score (default: timestamp)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
@@ -478,7 +555,31 @@ def run(args: argparse.Namespace) -> Path:
     if not candidates:
         raise SystemExit("No runs matched current summarize filters.")
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
+    if args.exclude_flag_short_sample:
+        candidates = [item for item in candidates if not _is_true_flag(item[1].get("flag_short_sample"))]
+    if args.exclude_flag_high_turnover:
+        candidates = [item for item in candidates if not _is_true_flag(item[1].get("flag_high_turnover"))]
+    if args.exclude_flag_negative_long_short:
+        candidates = [
+            item for item in candidates if not _is_true_flag(item[1].get("flag_negative_long_short"))
+        ]
+    if args.exclude_flag_relative_end_date:
+        candidates = [
+            item for item in candidates if not _is_true_flag(item[1].get("flag_relative_end_date"))
+        ]
+    if not candidates:
+        raise SystemExit("No runs matched current summarize filters.")
+
+    if args.sort_by == "score":
+        candidates.sort(
+            key=lambda item: (
+                _to_float(item[1].get("score")) is None,
+                -(_to_float(item[1].get("score")) or 0.0),
+                -item[0].timestamp(),
+            )
+        )
+    else:
+        candidates.sort(key=lambda item: item[0], reverse=True)
     if args.latest_n is not None:
         candidates = candidates[: int(args.latest_n)]
     rows = [row for _, row in candidates]

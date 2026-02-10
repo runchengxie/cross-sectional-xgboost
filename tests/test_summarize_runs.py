@@ -127,6 +127,7 @@ def test_summarize_runs_collects_metrics_and_flags(tmp_path):
     assert _as_bool(row_a["flag_short_sample"]) is False
     assert _as_bool(row_a["flag_negative_long_short"]) is False
     assert _as_bool(row_a["flag_high_turnover"]) is False
+    assert _as_bool(row_a["flag_relative_end_date"]) is False
     assert float(row_a["score"]) == pytest.approx(1.85)
 
     row_b = result[result["run_name"] == "beta"].iloc[0]
@@ -247,3 +248,80 @@ def test_summarize_runs_latest_n_validation(tmp_path):
                 "0",
             ]
         )
+
+
+def test_summarize_runs_marks_relative_end_date_from_config(tmp_path):
+    runs_dir = tmp_path / "runs"
+    run_dir = runs_dir / "alpha_20260101_120000_deadbeef"
+    summary = {
+        "run": {"name": "alpha", "timestamp": "20260101_120000", "config_hash": "deadbeef"},
+        "data": {"market": "hk", "provider": "rqdata", "end_date": "20260131"},
+        "eval": {"long_short": 0.01},
+        "backtest": {"stats": {"periods": 24, "avg_turnover": 0.6, "sharpe": 1.0}},
+    }
+    config = {"market": "hk", "data": {"end_date": "today"}}
+    _write_run(run_dir, summary, config)
+
+    output_csv = tmp_path / "summary.csv"
+    summarize_runs.main(["--runs-dir", str(runs_dir), "--output", str(output_csv)])
+
+    result = pd.read_csv(output_csv)
+    row = result.iloc[0]
+    assert str(row["data_end_date"]) == "20260131"
+    assert row["data_end_date_config"] == "today"
+    assert _as_bool(row["flag_relative_end_date"]) is True
+
+
+def test_summarize_runs_exclude_flags_and_sort_by_score(tmp_path):
+    runs_dir = tmp_path / "runs"
+
+    def _mk(
+        run_name: str,
+        timestamp: str,
+        *,
+        periods: int,
+        turnover: float,
+        sharpe: float,
+        end_date_cfg: str,
+    ) -> None:
+        run_dir = runs_dir / f"{run_name}_{timestamp}_deadbeef"
+        summary = {
+            "run": {"name": run_name, "timestamp": timestamp, "config_hash": "deadbeef"},
+            "data": {"market": "hk", "provider": "rqdata", "end_date": "20260131"},
+            "eval": {"long_short": 0.02},
+            "backtest": {
+                "stats": {
+                    "periods": periods,
+                    "sharpe": sharpe,
+                    "max_drawdown": -0.1,
+                    "avg_turnover": turnover,
+                    "avg_cost_drag": 0.01,
+                }
+            },
+        }
+        config = {"market": "hk", "data": {"end_date": end_date_cfg}}
+        _write_run(run_dir, summary, config)
+
+    _mk("alpha", "20260101_120000", periods=30, turnover=0.6, sharpe=1.0, end_date_cfg="today")
+    _mk("beta", "20260102_120000", periods=30, turnover=0.8, sharpe=3.0, end_date_cfg="20251231")
+    _mk("gamma", "20260103_120000", periods=28, turnover=0.5, sharpe=2.0, end_date_cfg="20251231")
+
+    output_csv = tmp_path / "filtered.csv"
+    summarize_runs.main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(output_csv),
+            "--exclude-flag-short-sample",
+            "--exclude-flag-high-turnover",
+            "--exclude-flag-relative-end-date",
+            "--sort-by",
+            "score",
+        ]
+    )
+
+    result = pd.read_csv(output_csv)
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["run_name"] == "gamma"
