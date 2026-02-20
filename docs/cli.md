@@ -164,7 +164,7 @@ csml summarize \
 * `--top-k <int>`：可选 Top-K 过滤。
 * `--as-of <date_or_token>`：持仓时点（默认 `t-1`）。
   * 支持：`YYYYMMDD`、`YYYY-MM-DD`、`today`、`t-1`、`last_trading_day`、`last_completed_trading_day`。
-  * 说明：`holdings/snapshot/alloc` 当前对 `last_trading_day` 两个 token 使用自然日回退并输出 warning（不接入交易日历）。
+  * 说明：当能识别到 `provider=rqdata` 且有 `market` 上下文（来自 run `summary.json` 或 `--config`）时，`last_trading_day` 两个 token 会按交易日解析；否则回退自然日并输出 warning。
 * `--source <mode>`：`auto/backtest/live`（默认 `auto`）。
 * `--format <fmt>`：`text/csv/json`（默认 `text`）。
 * `--out <path>`：输出到文件；不传则 stdout。

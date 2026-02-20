@@ -31,6 +31,7 @@ def test_backtest_initial_cost_applied():
     assert np.isclose(gross_series.iloc[0], 0.10)
     assert np.isclose(net_series.iloc[0], 0.10 - 0.001)
     assert np.isclose(turnover_series.iloc[0], 1.0)
+    assert stats["periods_with_delayed_exit"] == 0
 
 
 def test_backtest_turnover_accounts_for_weight_drift():
@@ -169,9 +170,15 @@ def test_backtest_exit_delay_uses_next_available_price():
         exit_mode="rebalance",
         exit_price_policy="delay",
     )
-    _, net_series, _, _, _ = result
+    stats, net_series, _, _, period_info = result
     assert net_series.index[0] == pd.Timestamp("2020-01-03")
     assert np.isclose(net_series.iloc[0], -0.10)
+    assert stats["periods_with_delayed_exit"] == 1
+    assert np.isclose(stats["avg_exit_lag_days"], 1.0)
+    assert np.isclose(stats["max_exit_lag_days"], 1.0)
+    assert period_info[0]["planned_exit_date"] == pd.Timestamp("2020-01-02")
+    assert period_info[0]["exit_date"] == pd.Timestamp("2020-01-03")
+    assert period_info[0]["exit_delay_steps"] == 1
 
 
 def test_backtest_buffer_reduces_turnover():
@@ -297,3 +304,62 @@ def test_backtest_tradable_filters_entry_selection():
     assert result is not None
     _, net_series, _, _, _ = result
     assert np.isclose(net_series.iloc[0], -0.10)
+
+
+def test_backtest_exit_delay_with_none_fallback_skips_unresolved_exit():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]),
+            "ts_code": ["A", "A", "A"],
+            "pred": [1.0, 1.0, 1.0],
+            "close": [100.0, np.nan, np.nan],
+            "is_tradable": [True, False, False],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        exit_price_policy="delay",
+        exit_fallback_policy="none",
+        tradable_col="is_tradable",
+    )
+    assert result is None
+
+
+def test_backtest_exit_delay_with_ffill_fallback_uses_previous_tradable_price():
+    df = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]),
+            "ts_code": ["A", "A", "A"],
+            "pred": [1.0, 1.0, 1.0],
+            "close": [100.0, 99.0, 98.0],
+            "is_tradable": [True, False, False],
+        }
+    )
+    rebalance_dates = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+    result = backtest_topk(
+        df,
+        pred_col="pred",
+        price_col="close",
+        rebalance_dates=rebalance_dates,
+        top_k=1,
+        shift_days=0,
+        cost_bps=0,
+        trading_days_per_year=252,
+        exit_mode="rebalance",
+        exit_price_policy="delay",
+        exit_fallback_policy="ffill",
+        tradable_col="is_tradable",
+    )
+    assert result is not None
+    _, net_series, _, _, _ = result
+    assert net_series.index[0] == pd.Timestamp("2020-01-02")
+    assert np.isclose(net_series.iloc[0], 0.0)

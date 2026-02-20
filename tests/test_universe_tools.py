@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 
 from csml.project_tools import build_hk_connect_universe as hk_universe
 from csml.project_tools import fetch_index_components as index_components
@@ -11,8 +12,8 @@ from csml.project_tools import fetch_index_components as index_components
         ("t", "today"),
         ("t-1", "t-1"),
         ("yesterday", "t-1"),
-        ("last_trading_day", "t-1"),
-        ("last_completed_trading_day", "t-1"),
+        ("last_trading_day", "last_trading_day"),
+        ("last_completed_trading_day", "last_completed_trading_day"),
         ("20260131", "20260131"),
     ],
 )
@@ -46,6 +47,21 @@ def test_extract_universe_config_normalizes_nested_keys():
     assert normalized["start_date"] == "20250101"
     assert normalized["rqdata_user"] == "u"
     assert normalized["rqdata_pass"] == "p"
+
+
+def test_resolve_as_of_date_respects_last_trading_variants(monkeypatch):
+    calls = []
+
+    def fake_resolve_last_trading_date(rqdatac, as_of, market, include_today):
+        calls.append(include_today)
+        return pd.Timestamp("2026-01-31")
+
+    monkeypatch.setattr(hk_universe, "resolve_last_trading_date", fake_resolve_last_trading_date)
+
+    hk_universe.resolve_as_of_date(object(), "last_trading_day", "hk")
+    hk_universe.resolve_as_of_date(object(), "last_completed_trading_day", "hk")
+
+    assert calls == [True, False]
 
 
 def test_month_bounds_handles_leap_year():

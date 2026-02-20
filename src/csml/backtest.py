@@ -98,6 +98,10 @@ def summarize_period_returns(
             "kurtosis": np.nan,
             "var_95": np.nan,
             "cvar_95": np.nan,
+            "avg_exit_lag_days": np.nan,
+            "max_exit_lag_days": np.nan,
+            "periods_with_delayed_exit": 0,
+            "delayed_exit_ratio": np.nan,
         }
 
     nav = (1 + returns).cumprod()
@@ -143,6 +147,34 @@ def summarize_period_returns(
 
     timing = _drawdown_timing(nav)
 
+    exit_lags: list[float] = []
+    for info in period_info:
+        lag_raw = info.get("exit_delay_steps")
+        if lag_raw is None:
+            planned_idx = info.get("planned_exit_idx")
+            exit_idx = info.get("exit_idx")
+            if planned_idx is not None and exit_idx is not None:
+                lag_raw = int(exit_idx) - int(planned_idx)
+        if lag_raw is None:
+            continue
+        try:
+            lag = float(lag_raw)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(lag):
+            exit_lags.append(max(0.0, lag))
+
+    if exit_lags:
+        avg_exit_lag = float(np.mean(exit_lags))
+        max_exit_lag = float(np.max(exit_lags))
+        delayed_periods = int(sum(lag > 0 for lag in exit_lags))
+        delayed_ratio = delayed_periods / float(len(exit_lags))
+    else:
+        avg_exit_lag = np.nan
+        max_exit_lag = np.nan
+        delayed_periods = 0
+        delayed_ratio = np.nan
+
     skew = float(returns.skew()) if returns.shape[0] > 2 else np.nan
     kurtosis = float(returns.kurtosis()) if returns.shape[0] > 3 else np.nan
     if returns.shape[0] > 0:
@@ -172,6 +204,10 @@ def summarize_period_returns(
         "kurtosis": kurtosis,
         "var_95": var_95,
         "cvar_95": cvar_95,
+        "avg_exit_lag_days": avg_exit_lag,
+        "max_exit_lag_days": max_exit_lag,
+        "periods_with_delayed_exit": delayed_periods,
+        "delayed_exit_ratio": delayed_ratio,
     }
 
 
@@ -305,6 +341,8 @@ def backtest_topk(
             continue
 
         entry_date = trade_dates[entry_idx]
+        planned_exit_idx = exit_idx
+        planned_exit_date = trade_dates[planned_exit_idx]
         day = data[data["trade_date"] == reb_date]
         if day.empty:
             continue
@@ -430,9 +468,12 @@ def backtest_topk(
             {
                 "rebalance_date": reb_date,
                 "entry_idx": entry_idx,
+                "planned_exit_idx": planned_exit_idx,
                 "exit_idx": exit_idx,
                 "entry_date": entry_date,
+                "planned_exit_date": planned_exit_date,
                 "exit_date": exit_date,
+                "exit_delay_steps": int(exit_idx - planned_exit_idx),
             }
         )
         prev_exit_idx = exit_idx

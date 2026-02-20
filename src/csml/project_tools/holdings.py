@@ -13,11 +13,73 @@ from ..date_utils import resolve_date_token
 from .symbols import ensure_symbol_columns
 
 
-def _resolve_as_of(value: str | None) -> pd.Timestamp:
+def _normalize_provider(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"rqdata", "rqdatac"}:
+        return "rqdata"
+    return text
+
+
+def _normalize_market(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
+
+
+def _resolve_date_context(
+    config_path: str | None,
+    summary: object | None,
+) -> tuple[str | None, str | None]:
+    market = None
+    provider = None
+
+    if isinstance(summary, dict):
+        data = summary.get("data")
+        if isinstance(data, dict):
+            market = _normalize_market(data.get("market"))
+            provider = _normalize_provider(data.get("provider"))
+
+    if (market is not None and provider is not None) or not config_path:
+        return market, provider
+
+    try:
+        resolved = resolve_pipeline_config(config_path)
+    except Exception:
+        return market, provider
+    cfg = resolved.data if isinstance(resolved.data, dict) else {}
+    data_cfg = cfg.get("data") if isinstance(cfg, dict) else None
+    data_cfg = data_cfg if isinstance(data_cfg, dict) else {}
+    rq_cfg = data_cfg.get("rqdata") if isinstance(data_cfg, dict) else None
+    rq_cfg = rq_cfg if isinstance(rq_cfg, dict) else {}
+
+    if market is None:
+        market = _normalize_market(
+            cfg.get("market")
+            or data_cfg.get("market")
+            or rq_cfg.get("market")
+        )
+    if provider is None:
+        provider = _normalize_provider(data_cfg.get("provider"))
+    return market, provider
+
+
+def _resolve_as_of(
+    value: str | None,
+    *,
+    market: str | None = None,
+    provider: str | None = None,
+) -> pd.Timestamp:
     try:
         return resolve_date_token(
             value,
             default="t-1",
+            market=market,
+            provider=provider,
             warn_to_stderr=True,
             warn_label="--as-of",
         )
@@ -329,6 +391,7 @@ def main(argv: list[str] | None = None) -> None:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except Exception:
             summary = None
+    date_market, date_provider = _resolve_date_context(args.config, summary)
 
     def _pick_summary_positions_path(kind: str) -> Path | None:
         if not isinstance(summary, dict):
@@ -398,7 +461,11 @@ def main(argv: list[str] | None = None) -> None:
     if entry_dates.isna().all():
         raise SystemExit("Failed to parse entry_date column.")
 
-    as_of = _resolve_as_of(args.as_of)
+    as_of = _resolve_as_of(
+        args.as_of,
+        market=date_market,
+        provider=date_provider,
+    )
     eligible = entry_dates <= as_of
     if not eligible.any():
         raise SystemExit("No holdings available before the requested --as-of date.")
@@ -460,6 +527,8 @@ def main(argv: list[str] | None = None) -> None:
             if "rebalance_date" in selection.columns
             else None,
             "data_end_date": data_end_date.strftime("%Y-%m-%d") if data_end_date is not None else None,
+            "market": date_market,
+            "data_provider": date_provider,
             "source": source,
             "run_dir": str(run_dir),
             "positions_file": str(positions_path),

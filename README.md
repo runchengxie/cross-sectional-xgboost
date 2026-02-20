@@ -308,13 +308,17 @@ csml universe hk-connect --mode daily
 * 持仓快照输出的是 target holdings，`entry_date = rebalance_date + shift_days`。当 `shift_days=1` 时，月末信号对应次月首个交易日入场，“当月持仓”可能仍是上月组合。
 * 成本模型：`transaction_cost_bps` 为单边成本；首期建仓只计单边成本，后续按换手率计算双边成本。
 * 换手率考虑权重漂移后的再平衡需求；支持 Top-K 缓冲区（`buffer_exit/buffer_entry`）降低换手；停牌/缺失通过 `is_tradable` + `backtest.exit_price_policy` 近似处理（strict/ffill/delay），仍未建模涨跌停/盘口滑点等。
+* `backtest.exit_fallback_policy` 与 `backtest.tradable_col` 会直接影响停牌/缺价期的退出语义：`delay+ffill` 和 `delay+none` 的行为差异很大。
+* 当 `exit_price_policy=delay` 时，回测统计会额外记录 `avg_exit_lag_days/max_exit_lag_days/periods_with_delayed_exit`，并在出现延迟退出时输出 warning。
 * `exit_mode=label_horizon` 不支持与再平衡频率重叠（若持有期 > 再平衡间隔会直接跳过/报错）；需保持间隔≈持有期，或改用 `exit_mode=rebalance`。
+* `eval.purge_days` 未配置时会自动按 `label.horizon_days_effective + label.shift_days` 推导；若手工覆盖得过小，可能引入标签泄漏风险（日志会 warning）。
 
 ## 注意事项
 
 * 静态 `symbols`/`symbols_file` 会在历史回测中产生前视偏差；严谨回测应使用 `by_date_file`（PIT），并将 `universe.mode` 设为 `pit` 或开启 `universe.require_by_date`。
 * `fetch_index_components.py` 默认导出静态成分列表，适合研究/当期池；历史回测请使用 `--by-date-out` 生成 PIT 成分并接入 `by_date_file`。
 * `drop_st` 基于名称匹配；`drop_suspended` 默认改为生成 `is_tradable` 标记（可用 `universe.suspended_policy=filter` 继续硬过滤），仍非严格 PIT。
+* `last_trading_day` token 在不同命令的解析能力不同：`csml run` 可在 `provider=rqdata` 下用交易日历；`holdings/snapshot/alloc` 在能识别 `provider=rqdata+market` 上下文时同样按交易日，否则回退自然日（含 warning）。自动化任务建议写绝对日期。
 
 ## 常见研究流程
 

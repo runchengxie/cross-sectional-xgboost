@@ -93,6 +93,20 @@ def _resolve_market(cfg: dict, symbols: list[str]) -> str | None:
     return None
 
 
+def _resolve_provider(cfg: dict) -> str | None:
+    data_cfg = cfg.get("data") if isinstance(cfg, dict) else None
+    data_cfg = data_cfg if isinstance(data_cfg, dict) else {}
+    value = data_cfg.get("provider")
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"rqdata", "rqdatac"}:
+        return "rqdata"
+    return text
+
+
 def _to_rq_order_book_id(symbol: str, market: str | None) -> str:
     text = str(symbol or "").strip().upper()
     if not text:
@@ -575,16 +589,25 @@ def main(argv: list[str] | None = None) -> None:
     if args.price_lookback_days <= 0:
         raise SystemExit("--price-lookback-days must be a positive integer.")
 
-    as_of = holdings._resolve_as_of(args.as_of)
+    cfg = _load_config(args.config)
+    cfg_provider = _resolve_provider(cfg)
+    cfg_market = _resolve_market(cfg, [])
+
     run_dir: Path | None = None
     positions_path: Path | None = None
 
     if args.positions_file:
+        as_of = holdings._resolve_as_of(
+            args.as_of,
+            market=cfg_market,
+            provider=cfg_provider,
+        )
         positions_path = Path(args.positions_file).expanduser()
         if not positions_path.is_absolute():
             positions_path = (Path.cwd() / positions_path).resolve()
         selection, entry_date = _select_from_positions_file(positions_path, as_of)
         source = "positions_file"
+        payload_market = None
     else:
         payload = _load_holdings_payload(args)
         rows = payload.get("holdings")
@@ -609,11 +632,21 @@ def main(argv: list[str] | None = None) -> None:
         if positions_value:
             positions_path = Path(str(positions_value))
         source = str(payload.get("source") or args.source)
+        payload_market = holdings._normalize_market(payload.get("market"))
+        payload_provider = holdings._normalize_provider(payload.get("data_provider"))
+        as_of_payload = pd.to_datetime(payload.get("as_of"), errors="coerce")
+        if pd.notna(as_of_payload):
+            as_of = pd.Timestamp(as_of_payload).normalize()
+        else:
+            as_of = holdings._resolve_as_of(
+                args.as_of,
+                market=payload_market or cfg_market,
+                provider=payload_provider or cfg_provider,
+            )
 
     prepared = _prepare_selection(selection, side=args.side, top_n=args.top_n)
     symbols = [str(value) for value in prepared["ts_code"].tolist()]
-    cfg = _load_config(args.config)
-    market = _resolve_market(cfg, symbols)
+    market = _resolve_market(cfg, symbols) or payload_market
 
     rqdatac = _init_rqdatac(args.config, args.username, args.password)
     price_date = _resolve_price_date(rqdatac, as_of, market)

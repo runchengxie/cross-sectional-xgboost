@@ -75,6 +75,61 @@ TuShare 相关可覆盖项（按需配置）：
 * `daily_params` / `basic_params`：额外参数（与上面字段合并）。
 * `daily_symbol_param` / `daily_start_param` / `daily_end_param`：覆盖接口参数名。
 
+## 回测执行细节（backtest）
+
+关键键：
+
+* `exit_price_policy`：`strict` / `ffill` / `delay`。
+  * `strict`：到期日没价格（或不可交易）则该持仓本期不计算退出。
+  * `ffill`：用到期日前最近可用价格退出。
+  * `delay`：向后找最近可用价格退出（可能导致该期退出日后移）。
+* `exit_fallback_policy`：`ffill` / `none`（主要给 `delay` 使用）。
+  * `ffill`：`delay` 向后找不到可用价时，回退到到期日前最近可用价。
+  * `none`：`delay` 向后找不到可用价时，不做回退（该持仓本期不计算退出）。
+* `tradable_col`：回测可交易性列名，默认 `is_tradable`。
+  * 若列存在：入场与退出都会受该列约束（`False` 视为不可交易）。
+  * 若列不存在：回测退化为只看价格列可用性。
+  * 当 `exit_price_policy=delay` 时，summary 的回测统计会额外给出 `avg_exit_lag_days/max_exit_lag_days/periods_with_delayed_exit`。
+
+与 `universe.suspended_policy` 的闭环：
+
+* `universe.suspended_policy=mark`：保留样本并标记 `is_tradable`（推荐与 `backtest.tradable_col=is_tradable` 配合）。
+* `universe.suspended_policy=filter`：前置过滤停牌样本，回测阶段通常更少触发不可交易分支。
+
+优先级说明：
+
+* 旧键：`backtest.exit_price_policy` / `backtest.exit_fallback_policy`
+* 新键：`backtest.execution.exit_policy.price` / `backtest.execution.exit_policy.fallback`
+* 若两者同时存在，`backtest.execution.exit_policy.*` 最终生效（旧键作为默认值/兼容入口）。
+
+## 切分泄漏防护（eval）
+
+关键键：
+
+* `eval.purge_days`
+* `eval.embargo_days`
+
+默认行为：
+
+* `eval.purge_days` 未配置时，会自动取 `label.horizon_days_effective + label.shift_days`（其中 `horizon_days_effective` 在 `horizon_mode=next_rebalance` 下会按重平衡间隔估算）。
+* `eval.embargo_days` 未配置时默认 `0`。
+
+建议：
+
+* 若需要显式覆盖，通常建议 `purge_days >= shift_days + horizon_days_effective`。
+* 当 `sample_on_rebalance_dates=true` 时，系统会把 `purge/embargo` 从“天数”换算为“重平衡步数”。
+* 若你显式设置了过小的 `purge_days`（小于 `shift_days + horizon_days_effective`），运行日志会提示潜在标签泄漏风险。
+
+## 日期 token 一致性说明
+
+`today/t-1/last_trading_day/last_completed_trading_day` 在不同命令的解析能力不同：
+
+* `csml run`：当 `provider=rqdata` 且交易日历可用时，`last_trading_day` 走严格交易日；否则回退自然日并 warning。
+* `csml holdings/snapshot/alloc --as-of`：当能从 run summary 或 `--config` 识别出 `provider=rqdata` + `market` 时，也会按交易日解析；缺少上下文时回退自然日并 warning。
+* `csml universe hk-connect`：`today` / `t-1` / `last_trading_day` / `last_completed_trading_day` 由 RQData 交易日历解析；其余工具脚本请以各自帮助文档为准。
+
+做自动化或复现实验时，建议直接使用绝对日期（`YYYYMMDD`）。
+
 ## Walk-forward 细节
 
 * `eval.walk_forward.backtest_enabled`：为 walk-forward 的每个窗口是否跑回测（对 live 配置常设为 false）。

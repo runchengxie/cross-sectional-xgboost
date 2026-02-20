@@ -77,8 +77,10 @@ def normalize_date_token(value: object, label: str) -> str | None:
     lowered = text.lower()
     if lowered in {"today", "t"}:
         return "today"
-    if lowered in {"t-1", "yesterday", "last_trading_day", "last_completed_trading_day"}:
+    if lowered in {"t-1", "yesterday"}:
         return "t-1"
+    if lowered in {"last_trading_day", "last_completed_trading_day"}:
+        return lowered
     return validate_yyyymmdd(text, label)
 
 
@@ -196,6 +198,10 @@ def resolve_as_of_date(rqdatac, token: str, market: str) -> pd.Timestamp:
     if token == "today":
         return resolve_last_trading_date(rqdatac, today, market, include_today=True)
     if token == "t-1":
+        return resolve_last_trading_date(rqdatac, today, market, include_today=False)
+    if token == "last_trading_day":
+        return resolve_last_trading_date(rqdatac, today, market, include_today=True)
+    if token == "last_completed_trading_day":
         return resolve_last_trading_date(rqdatac, today, market, include_today=False)
     return resolve_last_trading_date(rqdatac, parse_date(token), market, include_today=True)
 
@@ -330,10 +336,21 @@ def main(argv: list[str] | None = None) -> None:
     if start_token in {"today", "t-1"}:
         raise SystemExit("start-date must be in YYYYMMDD format.")
 
-    if mode == "backtest" and end_token in {"today", "t-1"}:
+    if mode == "backtest" and end_token in {
+        "today",
+        "t-1",
+        "last_trading_day",
+        "last_completed_trading_day",
+    }:
         mode = "daily"
     if mode == "daily" and args.end_date is None and not as_of_token:
-        if end_token not in {None, "today", "t-1"}:
+        if end_token not in {
+            None,
+            "today",
+            "t-1",
+            "last_trading_day",
+            "last_completed_trading_day",
+        }:
             end_token = None
 
     load_dotenv()
@@ -356,12 +373,12 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit("Provide --start-date (or set start_date in config), or use --as-of.")
         start_date = parse_date(start_token)
         if mode == "daily":
-            if end_token in {None, "t-1"}:
+            if end_token in {None, "t-1", "last_completed_trading_day"}:
                 end_date = resolve_last_trading_date(
                     rqdatac, pd.Timestamp.now(), market, include_today=False
                 )
                 end_source = "t-1"
-            elif end_token == "today":
+            elif end_token in {"today", "last_trading_day"}:
                 end_date = resolve_last_trading_date(
                     rqdatac, pd.Timestamp.now(), market, include_today=True
                 )
@@ -371,8 +388,15 @@ def main(argv: list[str] | None = None) -> None:
         else:
             if not end_token:
                 raise SystemExit("Provide --end-date (or set end_date in config) for backtest mode.")
-            if end_token in {"today", "t-1"}:
-                raise SystemExit("end-date must be YYYYMMDD in backtest mode; use mode=daily for T-1.")
+            if end_token in {
+                "today",
+                "t-1",
+                "last_trading_day",
+                "last_completed_trading_day",
+            }:
+                raise SystemExit(
+                    "end-date must be YYYYMMDD in backtest mode; use mode=daily for trading-day tokens."
+                )
             end_date = parse_date(end_token)
 
     if start_date > end_date:

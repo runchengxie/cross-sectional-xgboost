@@ -23,7 +23,7 @@
 | `label` | 标签窗口、`shift_days`、标签模式 |
 | `split` | 训练/测试日期与 purge/embargo 信息 |
 | `eval` | IC、分位数、换手、错误指标、方向判定、滚动指标 |
-| `backtest` | 回测参数、绩效统计、基准/主动收益与滚动 Sharpe |
+| `backtest` | 回测参数、绩效统计、基准/主动收益与滚动 Sharpe（含延迟退出 lag 统计） |
 | `final_oos` | 最终留出期（启用时）对应评估与回测摘要 |
 | `positions` | 回测持仓文件路径与窗口字段声明 |
 | `live` | live 模式状态、as_of 与 live 持仓文件路径 |
@@ -48,6 +48,34 @@ best-effort（可能为空、缺失或未产出文件）：
 1. `final_oos` / `live` / `walk_forward` 子结构（取决于对应功能是否启用）。
 1. `dataset.parquet`、`eval_scored.parquet`、`backtest_*.csv` 等产物（取决于配置与数据可用性）。
 1. 任何依赖外部数据源补数/修订得到的统计值（同配置在不同日期可能变化）。
+
+## run 目录文件索引（按生成条件）
+
+| 文件 | 生成条件 | 主要用途 |
+| --- | --- | --- |
+| `summary.json` | 默认 | 机器可读总摘要，包含路径指针与关键指标 |
+| `config.used.yml` | 默认 | 实际生效配置（复现优先读这个） |
+| `dropped_dates.csv` | 存在被 `min_symbols_per_date` 丢弃的日期时 | 排查样本不足与过滤影响 |
+| `eval_scored.parquet` | `eval.save_artifacts=true` 且评估阶段成功 | `grid/summarize` 与二次分析复用 |
+| `dataset.parquet` | `eval.save_artifacts=true` 且 `eval.save_dataset=true` | 冻结建模输入样本 |
+| `ic_test.csv` / `ic_pearson_test.csv` | 默认 | 测试期 IC 时序 |
+| `ic_train.csv` / `ic_pearson_train.csv` | `eval.report_train_ic=true` | 训练期对照 |
+| `quantile_returns.csv` | 默认 | 分位数组合收益 |
+| `turnover_eval.csv` | 默认 | 评估侧换手序列 |
+| `backtest_net.csv` / `backtest_gross.csv` | `backtest.enabled=true` 且回测成功 | 净/毛收益序列 |
+| `backtest_turnover.csv` / `backtest_periods.csv` | `backtest.enabled=true` 且回测成功 | 回测换手与周期收益 |
+| `backtest_benchmark.csv` / `backtest_active.csv` | 配置了 `backtest.benchmark_symbol` 且数据可用 | 基准与主动收益 |
+| `positions_by_rebalance*.csv` / `positions_current*.csv` | 生成了持仓结果时 | 下游持仓消费/执行衔接 |
+| `rebalance_diff*.csv` | 对应 `positions_current*.csv` 存在至少两期时 | 最新一期调仓差异 |
+| `latest.json` | `live.enabled=true` 且 live 成功输出时 | 指向最新 live run 目录 |
+| `feature_importance.csv` | 模型支持且成功训练时 | 解释性分析 |
+| `walk_forward_*.csv` | `eval.walk_forward.enabled=true` | 滚动窗口稳健性分析 |
+| `permutation_test.csv` | `eval.permutation_test.enabled=true` | 抗伪发现检验 |
+
+说明：
+
+1. `*` 代表普通/`_live`/`_oos` 变体（是否存在取决于功能开关）。
+1. 所有下游脚本应优先使用 `summary.json` 中记录的文件路径，不要只按文件名猜测。
 
 ## 持仓文件
 

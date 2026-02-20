@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -57,6 +58,76 @@ from .rebalance import estimate_rebalance_gap, get_rebalance_dates
 warnings.filterwarnings("ignore")
 
 logger = logging.getLogger("csml")
+
+
+def _warn_if_purge_too_small(
+    *,
+    purge_days_cfg: object | None,
+    purge_days: int,
+    label_horizon_effective: int,
+    label_shift_days: int,
+) -> None:
+    """Warn when user-specified purge window is shorter than label span."""
+    if purge_days_cfg is None:
+        return
+    required = max(0, int(label_horizon_effective) + int(label_shift_days))
+    actual = max(0, int(purge_days))
+    if actual >= required:
+        return
+    logger.warning(
+        "eval.purge_days=%s is smaller than label span (%s = horizon_effective %s + shift_days %s); "
+        "this may cause label leakage.",
+        actual,
+        required,
+        int(label_horizon_effective),
+        int(label_shift_days),
+    )
+
+
+def _warn_if_delay_exit_lag(
+    *,
+    label_prefix: str,
+    exit_price_policy: str,
+    stats: Mapping[str, Any] | None,
+) -> None:
+    if str(exit_price_policy).strip().lower() != "delay":
+        return
+    if not isinstance(stats, Mapping):
+        return
+    delayed_raw = stats.get("periods_with_delayed_exit")
+    periods_raw = stats.get("periods")
+    try:
+        delayed_periods = int(delayed_raw) if delayed_raw is not None else 0
+    except (TypeError, ValueError):
+        delayed_periods = 0
+    try:
+        total_periods = int(periods_raw) if periods_raw is not None else 0
+    except (TypeError, ValueError):
+        total_periods = 0
+    if delayed_periods <= 0:
+        return
+    avg_lag = stats.get("avg_exit_lag_days")
+    max_lag = stats.get("max_exit_lag_days")
+    avg_value = np.nan
+    max_value = np.nan
+    try:
+        avg_value = float(avg_lag)
+    except (TypeError, ValueError):
+        avg_value = np.nan
+    try:
+        max_value = float(max_lag)
+    except (TypeError, ValueError):
+        max_value = np.nan
+    avg_text = f"{avg_value:.2f}" if np.isfinite(avg_value) else "nan"
+    max_text = f"{max_value:.0f}" if np.isfinite(max_value) else "nan"
+    logger.warning(
+        "%sDelay exit policy produced lagged exits in %s/%s periods (avg_lag=%s, max_lag=%s trade days).",
+        label_prefix,
+        delayed_periods,
+        total_periods,
+        avg_text,
+        max_text,
+    )
 
 
 def build_benchmark_series(
@@ -1658,6 +1729,12 @@ def run(config_ref: str | Path | None = None) -> None:
         purge_days = int(label_horizon_effective + LABEL_SHIFT_DAYS)
     else:
         purge_days = int(PURGE_DAYS_CFG)
+    _warn_if_purge_too_small(
+        purge_days_cfg=PURGE_DAYS_CFG,
+        purge_days=purge_days,
+        label_horizon_effective=label_horizon_effective,
+        label_shift_days=LABEL_SHIFT_DAYS,
+    )
     embargo_days = int(EMBARGO_DAYS_CFG)
 
     def _days_to_steps(days: int, gap_days: Optional[float]) -> int:
@@ -2638,6 +2715,11 @@ def run(config_ref: str | Path | None = None) -> None:
                         label_prefix,
                         stats["avg_cost_drag"] * 100,
                     )
+                _warn_if_delay_exit_lag(
+                    label_prefix=label_prefix,
+                    exit_price_policy=BACKTEST_EXIT_PRICE_POLICY,
+                    stats=stats,
+                )
 
                 if benchmark_df is not None and not benchmark_df.empty:
                     bench_series, bench_periods = build_benchmark_series(

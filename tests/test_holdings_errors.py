@@ -117,3 +117,29 @@ def test_holdings_invalid_asof_raises(tmp_path):
                 "not-a-date",
             ]
         )
+
+
+def test_resolve_as_of_passes_provider_market_context(monkeypatch):
+    captured = {}
+
+    def fake_resolve_date_token(
+        value,
+        default,
+        *,
+        market=None,
+        provider=None,
+        warn_to_stderr=False,
+        warn_label=None,
+    ):
+        captured["market"] = market
+        captured["provider"] = provider
+        return pd.Timestamp("2026-01-31")
+
+    monkeypatch.setattr(holdings, "resolve_date_token", fake_resolve_date_token)
+    result = holdings._resolve_as_of(
+        "last_trading_day",
+        market="hk",
+        provider="rqdata",
+    )
+    assert result == pd.Timestamp("2026-01-31")
+    assert captured == {"market": "hk", "provider": "rqdata"}
