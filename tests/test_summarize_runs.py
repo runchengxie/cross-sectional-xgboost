@@ -66,10 +66,13 @@ def test_summarize_runs_collects_metrics_and_flags(tmp_path):
             "buffer_entry": 1,
             "stats": {
                 "periods": 30,
+                "periods_per_year": 12.0,
                 "total_return": 0.6,
                 "ann_return": 0.5,
                 "ann_vol": 0.25,
                 "sharpe": 2.0,
+                "skew": 0.2,
+                "kurtosis": 0.1,
                 "max_drawdown": -0.1,
                 "avg_turnover": 0.5,
                 "avg_cost_drag": 0.01,
@@ -128,6 +131,9 @@ def test_summarize_runs_collects_metrics_and_flags(tmp_path):
     assert _as_bool(row_a["flag_negative_long_short"]) is False
     assert _as_bool(row_a["flag_high_turnover"]) is False
     assert _as_bool(row_a["flag_relative_end_date"]) is False
+    assert float(row_a["backtest_periods_per_year"]) == pytest.approx(12.0)
+    assert float(row_a["backtest_skew"]) == pytest.approx(0.2)
+    assert float(row_a["backtest_kurtosis_excess"]) == pytest.approx(0.1)
     assert float(row_a["score"]) == pytest.approx(1.85)
 
     row_b = result[result["run_name"] == "beta"].iloc[0]
@@ -325,3 +331,71 @@ def test_summarize_runs_exclude_flags_and_sort_by_score(tmp_path):
     assert len(result) == 1
     row = result.iloc[0]
     assert row["run_name"] == "gamma"
+
+
+def test_summarize_runs_computes_dsr_by_group_and_sorts(tmp_path):
+    runs_dir = tmp_path / "runs"
+
+    def _mk(run_name: str, timestamp: str, *, rebalance: str, sharpe: float) -> None:
+        run_dir = runs_dir / f"{run_name}_{timestamp}_deadbeef"
+        summary = {
+            "run": {"name": run_name, "timestamp": timestamp, "config_hash": "deadbeef"},
+            "data": {"market": "hk", "provider": "rqdata"},
+            "label": {"horizon_days": 20, "shift_days": 1},
+            "backtest": {
+                "top_k": 5,
+                "transaction_cost_bps": 15.0,
+                "rebalance_frequency": rebalance,
+                "stats": {
+                    "periods": 60,
+                    "periods_per_year": 12.0,
+                    "sharpe": sharpe,
+                    "skew": 0.0,
+                    "kurtosis": 0.0,
+                    "max_drawdown": -0.1,
+                    "avg_turnover": 0.5,
+                    "avg_cost_drag": 0.01,
+                },
+            },
+        }
+        config = {
+            "market": "hk",
+            "label": {"horizon_days": 20},
+            "backtest": {
+                "top_k": 5,
+                "transaction_cost_bps": 15.0,
+                "rebalance_frequency": rebalance,
+            },
+        }
+        _write_run(run_dir, summary, config)
+
+    _mk("alpha", "20260101_120000", rebalance="M", sharpe=2.0)
+    _mk("beta", "20260102_120000", rebalance="M", sharpe=1.0)
+    _mk("gamma", "20260103_120000", rebalance="W", sharpe=3.0)
+
+    output_csv = tmp_path / "dsr_sorted.csv"
+    summarize_runs.main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(output_csv),
+            "--sort-by",
+            "dsr",
+        ]
+    )
+
+    result = pd.read_csv(output_csv)
+    assert list(result["run_name"]) == ["alpha", "beta", "gamma"]
+
+    alpha = result[result["run_name"] == "alpha"].iloc[0]
+    beta = result[result["run_name"] == "beta"].iloc[0]
+    gamma = result[result["run_name"] == "gamma"].iloc[0]
+
+    assert int(alpha["dsr_n_trials"]) == 2
+    assert int(beta["dsr_n_trials"]) == 2
+    assert int(gamma["dsr_n_trials"]) == 1
+    assert float(alpha["dsr"]) > float(beta["dsr"])
+    assert float(alpha["dsr"]) > 0.0
+    assert pd.isna(gamma["dsr"])
+    assert float(alpha["dsr_sr0"]) == pytest.approx(float(beta["dsr_sr0"]))

@@ -9,9 +9,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 
 from ..date_utils import is_relative_date_token
+from ..sharpe_stats import annualized_sharpe_to_periodic, deflated_sharpe_ratio
 
 RUN_DIR_PATTERN = re.compile(
     r"^(?P<run_name>.+)_(?P<timestamp>\d{8}_\d{6})_(?P<config_hash>[0-9a-fA-F]{8})$"
@@ -61,13 +63,20 @@ FIELDNAMES = [
     "eval_long_short",
     "eval_turnover_mean",
     "backtest_periods",
+    "backtest_periods_per_year",
     "backtest_total_return",
     "backtest_ann_return",
     "backtest_ann_vol",
     "backtest_sharpe",
+    "backtest_skew",
+    "backtest_kurtosis_excess",
     "backtest_max_drawdown",
     "backtest_avg_turnover",
     "backtest_avg_cost_drag",
+    "dsr",
+    "dsr_sr0",
+    "dsr_n_trials",
+    "dsr_var_trials",
     "flag_short_sample",
     "flag_negative_long_short",
     "flag_high_turnover",
@@ -76,6 +85,14 @@ FIELDNAMES = [
     "status",
     "error",
 ]
+
+DSR_GROUP_FIELDS = (
+    "market",
+    "label_horizon_days",
+    "backtest_rebalance_frequency",
+    "transaction_cost_bps",
+    "backtest_top_k",
+)
 
 def _resolve_path(path_text: str | Path) -> Path:
     candidate = Path(path_text).expanduser()
@@ -105,9 +122,12 @@ def _first_non_empty(*values: Any) -> Any:
 
 def _to_float(value: Any) -> float | None:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    if not np.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _is_true_flag(value: Any) -> bool:
@@ -272,6 +292,81 @@ def _apply_flags_and_score(row: dict[str, Any], args: argparse.Namespace) -> Non
     ) * cost_penalty
 
 
+def _normalize_group_value(value: Any) -> Any:
+    if value is None:
+        return None
+    numeric = _to_float(value)
+    if numeric is not None and np.isfinite(numeric):
+        if float(numeric).is_integer():
+            return int(numeric)
+        return float(numeric)
+    if isinstance(value, str):
+        text = value.strip()
+        return text.lower() if text else None
+    return value
+
+
+def _dsr_group_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(_normalize_group_value(row.get(field)) for field in DSR_GROUP_FIELDS)
+
+
+def _compute_grouped_dsr(rows: list[dict[str, Any]]) -> None:
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(_dsr_group_key(row), []).append(row)
+
+    for group_rows in grouped.values():
+        n_trials = len(group_rows)
+        periodic_sharpes: list[float] = []
+        for row in group_rows:
+            sharpe_ann = _to_float(row.get("backtest_sharpe"))
+            periods_per_year = _to_float(row.get("backtest_periods_per_year"))
+            sharpe = annualized_sharpe_to_periodic(sharpe_ann, periods_per_year)
+            if np.isfinite(sharpe):
+                periodic_sharpes.append(float(sharpe))
+        var_trials = (
+            float(np.var(periodic_sharpes, ddof=1))
+            if len(periodic_sharpes) >= 2
+            else np.nan
+        )
+
+        for row in group_rows:
+            row["dsr_n_trials"] = n_trials
+            row["dsr_var_trials"] = var_trials if np.isfinite(var_trials) else None
+            if _is_true_flag(row.get("flag_short_sample")):
+                continue
+
+            periods = _to_float(row.get("backtest_periods"))
+            sharpe_ann = _to_float(row.get("backtest_sharpe"))
+            periods_per_year = _to_float(row.get("backtest_periods_per_year"))
+            sharpe = annualized_sharpe_to_periodic(sharpe_ann, periods_per_year)
+            if periods is None or periods <= 1:
+                continue
+            if not np.isfinite(sharpe):
+                continue
+
+            skew = _to_float(row.get("backtest_skew"))
+            kurtosis_excess = _to_float(row.get("backtest_kurtosis_excess"))
+            skew_value = float(skew) if skew is not None and np.isfinite(skew) else 0.0
+            kurtosis_value = (
+                float(kurtosis_excess)
+                if kurtosis_excess is not None and np.isfinite(kurtosis_excess)
+                else 0.0
+            )
+            dsr, sr0 = deflated_sharpe_ratio(
+                sharpe=float(sharpe),
+                periods=periods,
+                skew=skew_value,
+                kurtosis_excess=kurtosis_value,
+                n_trials=n_trials,
+                var_sharpe=var_trials,
+            )
+            if np.isfinite(dsr):
+                row["dsr"] = dsr
+            if np.isfinite(sr0):
+                row["dsr_sr0"] = sr0
+
+
 def _extract_row(source_runs_dir: Path, summary_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     row = _init_row(source_runs_dir, summary_path)
     errors: list[str] = []
@@ -389,10 +484,13 @@ def _extract_row(source_runs_dir: Path, summary_path: Path, args: argparse.Names
     backtest_stats = _get_nested(summary, "backtest", "stats")
     if isinstance(backtest_stats, dict):
         row["backtest_periods"] = backtest_stats.get("periods")
+        row["backtest_periods_per_year"] = backtest_stats.get("periods_per_year")
         row["backtest_total_return"] = backtest_stats.get("total_return")
         row["backtest_ann_return"] = backtest_stats.get("ann_return")
         row["backtest_ann_vol"] = backtest_stats.get("ann_vol")
         row["backtest_sharpe"] = backtest_stats.get("sharpe")
+        row["backtest_skew"] = backtest_stats.get("skew")
+        row["backtest_kurtosis_excess"] = backtest_stats.get("kurtosis")
         row["backtest_max_drawdown"] = backtest_stats.get("max_drawdown")
         row["backtest_avg_turnover"] = backtest_stats.get("avg_turnover")
         row["backtest_avg_cost_drag"] = backtest_stats.get("avg_cost_drag")
@@ -497,8 +595,8 @@ def add_summarize_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     parser.add_argument(
         "--sort-by",
         default="timestamp",
-        choices=["timestamp", "score"],
-        help="Sort rows by run timestamp or score (default: timestamp)",
+        choices=["timestamp", "score", "dsr"],
+        help="Sort rows by run timestamp, score, or DSR (default: timestamp)",
     )
     parser.add_argument(
         "--log-level",
@@ -561,11 +659,21 @@ def run(args: argparse.Namespace) -> Path:
     if not candidates:
         raise SystemExit("No runs matched current summarize filters.")
 
+    _compute_grouped_dsr([row for _, row in candidates])
+
     if args.sort_by == "score":
         candidates.sort(
             key=lambda item: (
                 _to_float(item[1].get("score")) is None,
                 -(_to_float(item[1].get("score")) or 0.0),
+                -item[0].timestamp(),
+            )
+        )
+    elif args.sort_by == "dsr":
+        candidates.sort(
+            key=lambda item: (
+                _to_float(item[1].get("dsr")) is None,
+                -(_to_float(item[1].get("dsr")) or 0.0),
                 -item[0].timestamp(),
             )
         )

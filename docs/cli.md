@@ -109,7 +109,7 @@ csml sweep-linear \
 * `--exclude-flag-high-turnover`：过滤掉 `flag_high_turnover=true`。
 * `--exclude-flag-negative-long-short`：过滤掉 `flag_negative_long_short=true`。
 * `--exclude-flag-relative-end-date`：过滤掉配置里 `data.end_date` 仍是相对日期 token（如 `today/t-1`）的 run。
-* `--sort-by <timestamp|score>`：按时间或按 `score` 排序（默认 `timestamp`）。
+* `--sort-by <timestamp|score|dsr>`：按时间、`score` 或 `dsr` 排序（默认 `timestamp`）。
 * `--log-level <level>`：日志级别（`CRITICAL/ERROR/WARNING/INFO/DEBUG`）。
 
 `score` 计算方式（用于 `--sort-by score`）：
@@ -129,6 +129,8 @@ score = backtest_sharpe
 
 * 若 `backtest_sharpe` 缺失，`score` 为空。
 * 若 `backtest_max_drawdown` 或 `backtest_avg_cost_drag` 缺失，惩罚项按 0 处理。
+* `dsr` 在 summarize 阶段按可比策略分组计算（`market` + `label_horizon_days` + `backtest_rebalance_frequency` + `transaction_cost_bps` + `backtest_top_k`），`N` 使用该组尝试次数。
+* `dsr` 的输入 Sharpe 会从年化值换回原频率（`sr = sr_ann / sqrt(periods_per_year)`），组内方差也在原频率下计算。
 
 示例：
 
